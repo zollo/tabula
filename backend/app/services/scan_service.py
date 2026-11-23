@@ -8,6 +8,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import func, or_, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import platforms
@@ -43,7 +44,11 @@ async def _client(db: AsyncSession, account: SocialAccount):
 
 
 async def store_posts(db: AsyncSession, account: SocialAccount, fetched: list[FetchedPost]) -> int:
-    """Insert new posts and refresh metrics on known ones. Returns how many were new."""
+    """Insert new posts and refresh metrics on known ones. Returns how many were new.
+
+    A scan and a backfill of the same account can overlap, so each insert runs in
+    a savepoint: if the other writer stored the post first, it's skipped.
+    """
     if not fetched:
         return 0
     ids = [p.external_id for p in fetched]
@@ -67,20 +72,24 @@ async def store_posts(db: AsyncSession, account: SocialAccount, fetched: list[Fe
         if row is not None:
             row.metrics = p.metrics
             continue
-        db.add(
-            Post(
-                social_account_id=account.id,
-                external_id=p.external_id,
-                kind=p.kind,
-                url=p.url,
-                text=p.text,
-                posted_at=p.posted_at,
-                media=p.media,
-                metrics=p.metrics,
-                raw=p.raw,
-            )
-        )
-        new += 1
+        try:
+            async with db.begin_nested():
+                db.add(
+                    Post(
+                        social_account_id=account.id,
+                        external_id=p.external_id,
+                        kind=p.kind,
+                        url=p.url,
+                        text=p.text,
+                        posted_at=p.posted_at,
+                        media=p.media,
+                        metrics=p.metrics,
+                        raw=p.raw,
+                    )
+                )
+            new += 1
+        except IntegrityError:
+            pass  # stored concurrently by another scan/backfill
     await db.flush()
     account.post_count = (
         await db.execute(
@@ -125,6 +134,7 @@ async def backfill(db: AsyncSession, account: SocialAccount, pages: int) -> bool
     if account.backfill_status != BackfillStatus.running:
         account.backfill_status = BackfillStatus.running
         account.backfill_started_at = account.backfill_started_at or now
+    account.backfill_touched_at = now
     try:
         client, cfg = await _client(db, account)
         for _ in range(pages):
@@ -137,6 +147,7 @@ async def backfill(db: AsyncSession, account: SocialAccount, pages: int) -> bool
                 account.backfill_finished_at = datetime.now(UTC)
                 account.backfill_cursor = None
                 break
+            account.backfill_touched_at = datetime.now(UTC)
             await db.commit()  # keep progress if the next page fails
         account.last_error = None
     except platforms.PlatformError as exc:
@@ -147,22 +158,22 @@ async def backfill(db: AsyncSession, account: SocialAccount, pages: int) -> bool
         await db.commit()
         # Retryable errors leave it `running`; the scheduler re-queues stale ones.
         return False
-    account.updated_at = now
     await db.commit()
     return account.backfill_status == BackfillStatus.running
 
 
 async def claim_due_scans(db: AsyncSession, limit: int = 200) -> list[SocialAccount]:
-    """Accounts due for a scan, each pushed to its next slot so it's queued once."""
+    """Accounts due for a scan, each pushed to its next slot so it's queued once.
+
+    `next_scan_at` is also how "scan now" is requested (see
+    tracking_service.request_scan), so a paused account can still be due once.
+    """
     now = datetime.now(UTC)
     due = list(
         (
             await db.execute(
                 select(SocialAccount)
-                .where(
-                    SocialAccount.scan_interval_minutes.is_not(None),
-                    SocialAccount.next_scan_at <= now,
-                )
+                .where(SocialAccount.next_scan_at <= now)
                 .order_by(SocialAccount.next_scan_at)
                 .limit(limit)
             )
@@ -177,7 +188,13 @@ async def claim_due_scans(db: AsyncSession, limit: int = 200) -> list[SocialAcco
                 SocialAccount.id == account.id,
                 SocialAccount.next_scan_at == account.next_scan_at,
             )
-            .values(next_scan_at=now + timedelta(minutes=account.scan_interval_minutes or 60))
+            .values(
+                next_scan_at=(
+                    now + timedelta(minutes=account.scan_interval_minutes)
+                    if account.scan_interval_minutes
+                    else None
+                )
+            )
         )
         if result.rowcount:
             claimed.append(account)
@@ -188,16 +205,22 @@ async def claim_due_scans(db: AsyncSession, limit: int = 200) -> list[SocialAcco
 async def backfills_to_queue(db: AsyncSession) -> list[SocialAccount]:
     """Pending backfills nobody picked up, plus running ones that look abandoned.
 
-    Touching `updated_at` on the ones returned keeps the next ticks from
-    queueing them again while they wait for a free worker.
+    Touching `backfill_touched_at` on the ones returned keeps the next ticks
+    from queueing them again while they wait for a free worker.
     """
     now = datetime.now(UTC)
     query = select(SocialAccount).where(
         or_(
             (SocialAccount.backfill_status == BackfillStatus.pending)
-            & (SocialAccount.updated_at < now - REQUEUE_PENDING),
+            & (
+                SocialAccount.backfill_touched_at.is_(None)
+                | (SocialAccount.backfill_touched_at < now - REQUEUE_PENDING)
+            ),
             (SocialAccount.backfill_status == BackfillStatus.running)
-            & (SocialAccount.updated_at < now - STALE_BACKFILL),
+            & (
+                SocialAccount.backfill_touched_at.is_(None)
+                | (SocialAccount.backfill_touched_at < now - STALE_BACKFILL)
+            ),
         )
     )
     accounts = list((await db.execute(query)).scalars())
@@ -205,7 +228,7 @@ async def backfills_to_queue(db: AsyncSession) -> list[SocialAccount]:
         await db.execute(
             update(SocialAccount)
             .where(SocialAccount.id.in_([a.id for a in accounts]))
-            .values(updated_at=now)
+            .values(backfill_touched_at=now)
         )
         await db.commit()
     return accounts

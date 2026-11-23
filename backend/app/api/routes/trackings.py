@@ -106,7 +106,7 @@ async def scan_now(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> Tracking:
-    """Queue a scan right away instead of waiting for the schedule."""
+    """Scan within a minute instead of waiting for the schedule (works while paused)."""
     return await tracking_service.request_scan(db, user, tracking_id)
 
 

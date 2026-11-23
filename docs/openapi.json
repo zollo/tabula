@@ -946,7 +946,7 @@
           "tracking"
         ],
         "summary": "Scan Now",
-        "description": "Queue a scan right away instead of waiting for the schedule.",
+        "description": "Scan within a minute instead of waiting for the schedule (works while paused).",
         "operationId": "scan_tracking_now",
         "security": [
           {

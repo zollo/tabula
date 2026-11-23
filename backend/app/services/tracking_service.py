@@ -130,6 +130,7 @@ async def add_tracking(
         )
     ).scalar_one_or_none()
     is_new = False
+    now = datetime.now(UTC)
     if account is None:
         client = platforms.get_client(platform, settings_service.platform_credentials(cfg))
         try:
@@ -174,6 +175,11 @@ async def add_tracking(
     await db.commit()
     await db.refresh(tracking)
     if is_new or account.backfill_status == BackfillStatus.failed:
+        # Durable first: if queueing fails, the scheduler retries a pending backfill.
+        account.backfill_status = BackfillStatus.pending
+        account.backfill_touched_at = now
+        await db.commit()
+        await db.refresh(tracking)
         dispatch.enqueue_backfill(account.id)
     return tracking
 
@@ -204,8 +210,12 @@ async def delete_tracking(db: AsyncSession, user: User, tracking_id: uuid.UUID) 
 
 
 async def request_scan(db: AsyncSession, user: User, tracking_id: uuid.UUID) -> Tracking:
+    """Make the account due now. The scheduler queues it on its next tick (within a
+    minute), so the request survives a Redis outage and works on paused accounts."""
     if not user.can_track:
         raise Forbidden("Your account is waiting for an administrator to enable tracking")
     tracking = await get_tracking(db, user, tracking_id)
-    dispatch.enqueue_scan(tracking.social_account_id)
+    tracking.social_account.next_scan_at = datetime.now(UTC)
+    await db.commit()
+    await db.refresh(tracking)
     return tracking

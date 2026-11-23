@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import Conflict, Invalid, NotFound
 from app.core.security import decode_access_token, hash_password, verify_password
+from app.models.tracking import Tracking
 from app.models.user import User, UserRole
 
 
@@ -126,5 +127,17 @@ async def delete_user(db: AsyncSession, actor: User, user_id: uuid.UUID) -> None
         raise Invalid("You can't delete yourself")
     if user.is_admin and user.is_active and await _active_admins(db) <= 1:
         raise Invalid("Tabula needs at least one active admin")
+    # Their trackings go with them; re-derive the schedules they contributed to.
+    from app.services.tracking_service import refresh_schedule
+
+    trackings = list(
+        (await db.execute(select(Tracking).where(Tracking.user_id == user.id))).scalars()
+    )
+    accounts = [t.social_account for t in trackings]
+    for t in trackings:
+        await db.delete(t)
     await db.delete(user)
+    await db.flush()
+    for account in accounts:
+        await refresh_schedule(db, account)
     await db.commit()

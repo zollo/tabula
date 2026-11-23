@@ -56,6 +56,9 @@ class SocialAccount(UUIDMixin, TimestampMixin, Base):
     backfill_cursor: Mapped[str | None] = mapped_column(String(1024))
     backfill_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     backfill_finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Last time a backfill made progress or was queued. Scans never touch it, so
+    # the scheduler can tell a stuck backfill from a busy account.
+    backfill_touched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     post_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 

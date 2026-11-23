@@ -25,6 +25,3 @@ def _send(task: str, account_id: uuid.UUID) -> None:
 def enqueue_backfill(account_id: uuid.UUID) -> None:
     _send("app.workers.tasks.backfill_account", account_id)
 
-
-def enqueue_scan(account_id: uuid.UUID) -> None:
-    _send("app.workers.tasks.scan_account", account_id)

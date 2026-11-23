@@ -187,27 +187,85 @@ def test_interval_limits_and_platform_rules(client, admin, enabled_user, fake_pl
     assert _track(client, headers, handle="carol").status_code == 422
 
 
-def test_scan_now_and_due_scans(client, enabled_user, fake_platform, queued):
-    _, headers = enabled_user
-    tracking = _track(client, headers).json()
-    account_id = tracking["social_account"]["id"]
-    queued.clear()
-    resp = client.post(f"/api/trackings/{tracking['id']}/scan", headers=headers)
-    assert resp.status_code == 202
-    assert queued == [("scan", account_id)]
-
-    async def make_due_and_claim():
+def _claim_twice():
+    async def go():
         async with AsyncSessionLocal() as db:
-            account = await db.get(SocialAccount, uuid.UUID(account_id))
-            account.next_scan_at = datetime.now(UTC) - timedelta(minutes=1)
-            await db.commit()
             first = await scan_service.claim_due_scans(db)
             second = await scan_service.claim_due_scans(db)
             return [str(a.id) for a in first], second
 
-    first, second = asyncio.run(make_due_and_claim())
+    return asyncio.run(go())
+
+
+def test_scan_now_and_due_scans(client, enabled_user, fake_platform, queued):
+    _, headers = enabled_user
+    tracking = _track(client, headers).json()
+    account_id = tracking["social_account"]["id"]
+    assert _claim_twice() == ([], [])  # not due yet
+
+    # "Scan now" is stored as a due time, so it survives Redis being down...
+    resp = client.post(f"/api/trackings/{tracking['id']}/scan", headers=headers)
+    assert resp.status_code == 202
+    first, second = _claim_twice()
     assert first == [account_id]
     assert second == []  # claimed once per slot
+    account = client.get(f"/api/accounts/{account_id}", headers=headers).json()
+    assert account["next_scan_at"] is not None
+
+    # ...and works while paused, without putting the account back on a schedule.
+    client.patch(f"/api/trackings/{tracking['id']}", json={"is_paused": True}, headers=headers)
+    client.post(f"/api/trackings/{tracking['id']}/scan", headers=headers)
+    first, _ = _claim_twice()
+    assert first == [account_id]
+    account = client.get(f"/api/accounts/{account_id}", headers=headers).json()
+    assert account["next_scan_at"] is None
+
+
+def test_deleting_a_user_reschedules_their_accounts(client, admin, enabled_user, fake_platform,
+                                                    queued):
+    user_id, headers = enabled_user
+    account_id = _track(client, headers, interval=15).json()["social_account"]["id"]
+    _track(client, admin, interval=120)
+    assert client.get(f"/api/accounts/{account_id}",
+                      headers=admin).json()["scan_interval_minutes"] == 15
+    assert client.delete(f"/api/users/{user_id}", headers=admin).status_code == 204
+    assert client.get(f"/api/accounts/{account_id}",
+                      headers=admin).json()["scan_interval_minutes"] == 120
+
+
+def test_concurrent_writers_skip_duplicate_posts(client, enabled_user, fake_platform, queued):
+    """A scan and a backfill that both miss a post in their lookup don't crash."""
+    _, headers = enabled_user
+    account_id = _track(client, headers).json()["social_account"]["id"]
+    posts = fake_platform.posts[:3]
+
+    async def race():
+        async with AsyncSessionLocal() as db:
+            account = await db.get(SocialAccount, uuid.UUID(account_id))
+            assert await scan_service.store_posts(db, account, posts) == 3
+            await db.commit()
+        async with AsyncSessionLocal() as db:
+            account = await db.get(SocialAccount, uuid.UUID(account_id))
+            real_execute = db.execute
+            calls = {"n": 0}
+
+            async def stale_lookup(stmt, *args, **kwargs):
+                # The first query is the "which of these exist?" lookup: pretend
+                # the other writer hasn't committed yet.
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    from sqlalchemy import select
+
+                    from app.models.post import Post
+                    return await real_execute(select(Post).where(Post.id.is_(None)))
+                return await real_execute(stmt, *args, **kwargs)
+
+            db.execute = stale_lookup
+            new = await scan_service.store_posts(db, account, posts)
+            await db.commit()
+            return new, account.post_count
+
+    assert asyncio.run(race()) == (0, 3)
 
 
 def test_platform_errors_are_recorded(client, enabled_user, fake_platform, queued):
@@ -232,8 +290,11 @@ def test_scheduler_requeues_forgotten_backfills_once(client, enabled_user, fake_
 
     async def age_and_collect():
         async with AsyncSessionLocal() as db:
+            assert await scan_service.backfills_to_queue(db) == []  # just queued by the API
             account = await db.get(SocialAccount, uuid.UUID(account_id))
-            account.updated_at = datetime.now(UTC) - timedelta(minutes=10)
+            account.backfill_touched_at = datetime.now(UTC) - timedelta(minutes=10)
+            # Scan activity doesn't hide a stuck backfill.
+            account.last_scanned_at = datetime.now(UTC)
             await db.commit()
             first = await scan_service.backfills_to_queue(db)
             second = await scan_service.backfills_to_queue(db)

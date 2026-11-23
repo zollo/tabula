@@ -31,6 +31,7 @@ def upgrade() -> None:
     sa.Column('backfill_cursor', sa.String(length=1024), nullable=True),
     sa.Column('backfill_started_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('backfill_finished_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('backfill_touched_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('post_count', sa.Integer(), nullable=False),
     sa.Column('id', sa.Uuid(), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),

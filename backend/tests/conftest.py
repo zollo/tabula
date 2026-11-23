@@ -143,5 +143,4 @@ def queued(monkeypatch) -> list[tuple[str, str]]:
     """Captures work the API queues for the worker instead of sending it to Redis."""
     sent: list[tuple[str, str]] = []
     monkeypatch.setattr(dispatch, "enqueue_backfill", lambda i: sent.append(("backfill", str(i))))
-    monkeypatch.setattr(dispatch, "enqueue_scan", lambda i: sent.append(("scan", str(i))))
     return sent
