@@ -18,7 +18,7 @@ from app.models.platform import PLATFORM_LABELS, Platform
 from app.models.social_account import BackfillStatus, SocialAccount
 from app.models.tracking import Tracking
 from app.models.user import User
-from app.services import settings_service
+from app.services import scan_service, settings_service
 from app.workers import dispatch
 
 
@@ -142,6 +142,12 @@ async def add_tracking(
                     )
                 # The API has no browser: the browser worker looks it up.
                 profile = await dispatch.resolve_in_browser(platform, handle)
+            elif source == "public":
+                # Paced like the workers' requests; a busy pacer reads as "try again".
+                client = await scan_service.client_for(
+                    db, platform, cfg, max_wait=timedelta(seconds=20)
+                )
+                profile = await client.resolve(handle)
             else:
                 client = platforms.get_client(
                     platform, settings_service.platform_credentials(cfg)
@@ -149,6 +155,10 @@ async def add_tracking(
                 profile = await client.resolve(handle)
         except platforms.ProfileNotFound as exc:
             raise NotFound(str(exc)) from exc
+        except platforms.Throttled as exc:
+            raise Invalid(
+                f"{PLATFORM_LABELS[platform]} is busy with other requests; try again in a minute"
+            ) from exc
         except platforms.PlatformError as exc:
             raise Invalid(str(exc)) from exc
         # The handle may have changed since we last saw this account.

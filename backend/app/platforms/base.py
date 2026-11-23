@@ -23,6 +23,14 @@ class PlatformError(Exception):
         self.retryable = retryable
 
 
+class Throttled(PlatformError):
+    """Our own rate limit says wait: try again at `retry_at` (not a failure)."""
+
+    def __init__(self, message: str, retry_at: datetime):
+        super().__init__(message, retryable=True)
+        self.retry_at = retry_at
+
+
 class PlatformNotConfigured(PlatformError):
     """Credentials for this platform are missing (see System settings)."""
 

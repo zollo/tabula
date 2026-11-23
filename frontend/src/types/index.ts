@@ -103,12 +103,15 @@ export interface SystemSettings {
   credential_values: Record<string, string>;
   platform_sources: Record<Platform, CollectionSource>;
   browser_platforms: Platform[];
+  // Platforms that can be read from public pages with no login (Reddit).
+  public_platforms: Platform[];
   browser_page_interval_seconds: number;
   browser_daily_page_cap: number;
+  public_request_interval_seconds: number;
 }
 
-// Where a platform's posts come from.
-export type CollectionSource = "api" | "browser";
+// Where a platform's posts come from: the API, a signed-in browser, or public pages (no login).
+export type CollectionSource = "api" | "browser" | "public";
 
 export type BrowserSessionStatus = "active" | "cooling_down" | "needs_attention" | "disabled";
 

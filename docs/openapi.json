@@ -2205,7 +2205,8 @@
               "type": "string",
               "enum": [
                 "api",
-                "browser"
+                "browser",
+                "public"
               ]
             },
             "propertyNames": {
@@ -2221,6 +2222,13 @@
             "type": "array",
             "title": "Browser Platforms"
           },
+          "public_platforms": {
+            "items": {
+              "$ref": "#/components/schemas/Platform"
+            },
+            "type": "array",
+            "title": "Public Platforms"
+          },
           "browser_page_interval_seconds": {
             "type": "integer",
             "title": "Browser Page Interval Seconds"
@@ -2228,6 +2236,10 @@
           "browser_daily_page_cap": {
             "type": "integer",
             "title": "Browser Daily Page Cap"
+          },
+          "public_request_interval_seconds": {
+            "type": "integer",
+            "title": "Public Request Interval Seconds"
           }
         },
         "type": "object",
@@ -2242,8 +2254,10 @@
           "credential_values",
           "platform_sources",
           "browser_platforms",
+          "public_platforms",
           "browser_page_interval_seconds",
-          "browser_daily_page_cap"
+          "browser_daily_page_cap",
+          "public_request_interval_seconds"
         ],
         "title": "SystemSettingsRead"
       },
@@ -2333,7 +2347,8 @@
                   "type": "string",
                   "enum": [
                     "api",
-                    "browser"
+                    "browser",
+                    "public"
                   ]
                 },
                 "propertyNames": {
@@ -2372,6 +2387,19 @@
               }
             ],
             "title": "Browser Daily Page Cap"
+          },
+          "public_request_interval_seconds": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 600.0,
+                "minimum": 6.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Public Request Interval Seconds"
           },
           "credentials": {
             "additionalProperties": {

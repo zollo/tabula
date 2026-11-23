@@ -43,6 +43,7 @@ async def get(db: AsyncSession) -> SystemSettings:
             platform_sources={},
             browser_page_interval_seconds=20,
             browser_daily_page_cap=400,
+            public_request_interval_seconds=10,
         )
         db.add(row)
         await db.commit()
@@ -83,13 +84,26 @@ def credential_sources(row: SystemSettings) -> dict[str, str]:
 
 # Platforms whose posts can be collected with a browser instead of the API.
 BROWSER_PLATFORMS = (Platform.x, Platform.reddit)
-SOURCES = ("api", "browser")
+# Platforms whose public pages can be read with no login or credentials at all.
+PUBLIC_PLATFORMS = (Platform.reddit,)
+SOURCES = ("api", "browser", "public")
+
+
+def _supported(platform: Platform, source: str) -> bool:
+    if source == "browser":
+        return platform in BROWSER_PLATFORMS
+    if source == "public":
+        return platform in PUBLIC_PLATFORMS
+    return source == "api"
+
+
+def _effective(platform: Platform, source: str) -> str:
+    return source if _supported(platform, source) else "api"
 
 
 def platform_source(row: SystemSettings, platform: Platform) -> str:
-    """'api' or 'browser': where this platform's posts come from."""
-    source = (row.platform_sources or {}).get(platform.value, "api")
-    return source if platform in BROWSER_PLATFORMS and source in SOURCES else "api"
+    """'api', 'browser' or 'public': where this platform's posts come from."""
+    return _effective(platform, (row.platform_sources or {}).get(platform.value, "api"))
 
 
 def platform_configured(platform: Platform, creds: dict[str, str]) -> bool:
@@ -103,15 +117,18 @@ def platform_configured(platform: Platform, creds: dict[str, str]) -> bool:
 
 async def platform_ready(db: AsyncSession, row: SystemSettings, platform: Platform) -> bool:
     """Whether adding and scanning accounts on this platform can work right now."""
-    if platform_source(row, platform) == "browser":
+    source = platform_source(row, platform)
+    if source == "browser":
         from app.services import scraper_session_service
 
         return await scraper_session_service.has_usable_session(db, platform)
+    if source == "public":
+        return True  # nothing to configure
     return platform_configured(platform, platform_credentials(row))
 
 
 async def _restart_backfills(db: AsyncSession, switched: list[Platform]) -> None:
-    """API and browser cursors don't mix: unfinished backfills on a platform whose
+    """Cursors from different sources don't mix: unfinished backfills on a platform whose
     source changed start over from the newest post (already stored posts are
     skipped), and the scheduler queues them on the new source's worker."""
     from sqlalchemy import update as sql_update
@@ -142,8 +159,7 @@ async def current_source(db: AsyncSession, platform: Platform) -> str:
             select(SystemSettings.platform_sources).where(SystemSettings.id == SINGLETON_ID)
         )
     ).scalar_one_or_none() or {}
-    source = stored.get(platform.value, "api")
-    return source if platform in BROWSER_PLATFORMS and source in SOURCES else "api"
+    return _effective(platform, stored.get(platform.value, "api"))
 
 
 async def update(
@@ -159,9 +175,11 @@ async def update(
         for key, value in changes["platform_sources"].items():
             platform = Platform(key.value if isinstance(key, Platform) else key)
             if value not in SOURCES:
-                raise Invalid(f"Unknown source {value!r} (use api or browser)")
+                raise Invalid(f"Unknown source {value!r} (use api, browser or public)")
             if value == "browser" and platform not in BROWSER_PLATFORMS:
                 raise Invalid(f"{platform.value} can't be collected with a browser")
+            if value == "public" and platform not in PUBLIC_PLATFORMS:
+                raise Invalid(f"{platform.value} can't be collected without a login")
             if platform_source(row, platform) != value:
                 switched.append(platform)
             sources[platform.value] = value

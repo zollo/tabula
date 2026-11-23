@@ -28,8 +28,9 @@ class SystemSettings(TimestampMixin, Base):
     # Platform credentials overriding the env vars, Fernet-encrypted
     # ({"x_bearer_token": "<token>", ...}). Never returned by the API.
     credentials: Mapped[dict[str, str]] = mapped_column(JSONType, nullable=False, default=dict)
-    # Where each platform's posts come from: "api" (default) or "browser"
-    # ({"x": "browser"}). Only X and Reddit support "browser".
+    # Where each platform's posts come from: "api" (default), "browser"
+    # ({"x": "browser"}; X and Reddit only) or "public" (Reddit only: its
+    # public .json pages, no login or credentials).
     platform_sources: Mapped[dict[str, str]] = mapped_column(
         JSONType, nullable=False, default=dict
     )
@@ -39,3 +40,8 @@ class SystemSettings(TimestampMixin, Base):
         Integer, nullable=False, default=20
     )
     browser_daily_page_cap: Mapped[int] = mapped_column(Integer, nullable=False, default=400)
+    # Public (no-login) collection pacing: minimum seconds between requests,
+    # shared by every worker (Reddit allows about 10 a minute without OAuth).
+    public_request_interval_seconds: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=10
+    )
