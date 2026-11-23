@@ -17,3 +17,6 @@ class RequestPacer(Base):
     # The earliest time the next request may start. Each request claims the
     # slot and pushes this forward by the interval (see pacer_service).
     next_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # A pause the site asked for (429, spent window, block). Requests that had
+    # already reserved a slot re-check it before they send.
+    hold_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

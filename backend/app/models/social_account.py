@@ -46,6 +46,9 @@ class SocialAccount(UUIDMixin, TimestampMixin, Base):
     next_scan_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     last_scanned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_error: Mapped[str | None] = mapped_column(Text)
+    # Where a scan deferred by our own rate limit picks up again (None = from
+    # the newest post). Older pages still end at the first known post.
+    scan_cursor: Mapped[str | None] = mapped_column(String(1024))
 
     # History backfill, resumable from `backfill_cursor`.
     backfill_status: Mapped[BackfillStatus] = mapped_column(

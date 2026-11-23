@@ -152,7 +152,8 @@ async def scan(db: AsyncSession, account: SocialAccount) -> int:
     retry_at = None
     try:
         client, _ = await _client(db, account)
-        cursor = None
+        # A scan our own pacing deferred continues where it stopped.
+        cursor = account.scan_cursor
         for _ in range(MAX_SCAN_PAGES):
             page = await client.fetch_page(_profile(account), cursor)
             new = await store_posts(db, account, page.posts)
@@ -161,19 +162,25 @@ async def scan(db: AsyncSession, account: SocialAccount) -> int:
             if new < len({p.external_id for p in page.posts}) or not page.next_cursor:
                 break
             cursor = page.next_cursor
+        account.scan_cursor = None
         account.last_error = None
     except platforms.Throttled as exc:
         # Our own pacing is full: not a failure, just come back when it frees up.
         retry_at = exc.retry_at
+        account.scan_cursor = cursor
         logger.info("Scan of %s/%s deferred: %s", account.platform, account.handle, exc)
     except platforms.PlatformError as exc:
+        # Retried on the next scan from the same page; a hard failure starts over.
+        account.scan_cursor = cursor if exc.retryable else None
         account.last_error = str(exc)
         logger.warning("Scan of %s/%s failed: %s", account.platform, account.handle, exc)
     finally:
         if client is not None:
             await close(client)
-    if retry_at is not None and account.scan_interval_minutes:
-        # Pages fetched before the deferral are stored; the rest waits for the slot.
+    if retry_at is not None:
+        # Pages fetched before the deferral are stored; the rest waits for the
+        # slot. Also for paused accounts, so a "scan now" isn't lost: the
+        # scheduler clears next_scan_at again once that scan has run.
         account.next_scan_at = retry_at
         await db.commit()
         return total
