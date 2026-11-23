@@ -1,0 +1,247 @@
+# Default values for the Tabula chart.
+
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  # -- Backend image: serves the REST API, runs the scan worker and migrations.
+  backend: ghcr.io/zollo/tabula-backend
+  # -- Frontend image: the React SPA served by nginx.
+  frontend: ghcr.io/zollo/tabula-frontend
+  # -- Tag for both images. Defaults to the chart appVersion (the release a
+  # published chart was cut from), or "latest" from a source checkout.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+# -- Non-secret settings, rendered into a ConfigMap as environment variables
+# (see .env.example). POSTGRES_HOST/PORT/DB/USER are set by the chart from the
+# postgresql section below.
+config:
+  TABULA_ENV: production
+  # Comma-separated browser origins; set to the public URL(s), e.g. https://tabula.example.com
+  CORS_ORIGINS: ""
+  # Public URL users reach Tabula on (used for Google sign-in redirects).
+  TABULA_PUBLIC_URL: ""
+  ACCESS_TOKEN_EXPIRE_MINUTES: "1440"
+  JWT_ALGORITHM: HS256
+  # Initial value of the "allow sign-up" system setting (admins can change it in the UI).
+  ALLOW_REGISTRATION: "true"
+  # The login form rejects special-use domains such as .local, so use a real-looking one.
+  BOOTSTRAP_ADMIN_EMAIL: admin@example.com
+  SCHEDULER_TICK_SECONDS: "60"
+  BACKFILL_PAGES_PER_RUN: "5"
+  # Reddit API client id (the secret goes in REDDIT_CLIENT_SECRET). Admins can
+  # also set platform credentials from Settings instead.
+  REDDIT_CLIENT_ID: ""
+  # Google sign-in: set this plus secrets.GOOGLE_CLIENT_SECRET (or that key in
+  # existingSecret). Redirect URI in Google Cloud: TABULA_PUBLIC_URL + /auth/google/callback.
+  GOOGLE_CLIENT_ID: ""
+
+# -- Name of an existing Secret with the sensitive settings. Keys:
+# SECRET_KEY, POSTGRES_PASSWORD (required); BOOTSTRAP_ADMIN_PASSWORD
+# (optional: if unset, a random password is generated and printed in the backend
+# log on first start); GOOGLE_CLIENT_SECRET (optional, enables Google sign-in
+# with config.GOOGLE_CLIENT_ID); X_BEARER_TOKEN, REDDIT_CLIENT_SECRET (optional
+# platform credentials). When empty the chart creates a Secret from `secrets` below.
+existingSecret: ""
+
+# -- Sensitive settings, used only when existingSecret is empty. Prefer an
+# existingSecret created out-of-band so secrets never sit in a values file.
+secrets: {}
+#  SECRET_KEY: "<openssl rand -hex 32>"
+#  POSTGRES_PASSWORD: "<openssl rand -hex 16>"
+#  BOOTSTRAP_ADMIN_PASSWORD: ""
+#  GOOGLE_CLIENT_SECRET: ""
+#  X_BEARER_TOKEN: ""
+#  REDDIT_CLIENT_SECRET: ""
+
+backend:
+  replicaCount: 2
+  # -- Run `alembic upgrade head` in an init container before the API starts
+  # (retries while the database comes up).
+  migrate: true
+  podAnnotations: {}
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: [ALL]
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 512Mi
+  readinessProbe:
+    httpGet:
+      path: /api/health/ready
+      port: http
+    initialDelaySeconds: 5
+    periodSeconds: 15
+  livenessProbe:
+    httpGet:
+      path: /api/health
+      port: http
+    initialDelaySeconds: 15
+    periodSeconds: 20
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  topologySpreadConstraints: []
+
+worker:
+  # Always one replica: it also runs Celery beat, which must not double-fire.
+  podAnnotations: {}
+  # -- Celery worker concurrency (processes): scans and backfills run in parallel.
+  concurrency: 4
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: [ALL]
+  resources:
+    requests:
+      cpu: 50m
+      memory: 256Mi
+    limits:
+      memory: 768Mi
+  livenessProbe:
+    exec:
+      command: ["sh", "-c", "celery -A app.workers.celery_app.celery_app inspect ping -d celery@$HOSTNAME --timeout 10"]
+    initialDelaySeconds: 60
+    periodSeconds: 120
+    timeoutSeconds: 30
+    failureThreshold: 3
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+frontend:
+  replicaCount: 2
+  podAnnotations: {}
+  # nginx starts as root and drops to the nginx user, so no runAsNonRoot here.
+  podSecurityContext:
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      memory: 128Mi
+  readinessProbe:
+    httpGet:
+      path: /
+      port: http
+    periodSeconds: 15
+  livenessProbe:
+    httpGet:
+      path: /
+      port: http
+    periodSeconds: 30
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  topologySpreadConstraints: []
+
+service:
+  backendPort: 8000
+  frontendPort: 80
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  # -- Hostnames. Each gets /api, /docs, /redoc, /openapi.json -> backend and
+  # everything else -> frontend.
+  hosts:
+    - tabula.example.com
+  tls: []
+  #  - secretName: tabula-tls
+  #    hosts: [tabula.example.com]
+
+# Bundled PostgreSQL (single instance, StatefulSet + PVC). It holds all durable
+# data: users, settings, tracked accounts and every archived post.
+postgresql:
+  enabled: true
+  image: postgres:16-alpine
+  user: tabula
+  database: tabula
+  persistence:
+    # -- StorageClass for the data PVC ("" = cluster default).
+    storageClass: ""
+    size: 20Gi
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  # Nightly pg_dump (custom format) to a separate volume, e.g. an NFS-backed
+  # StorageClass, so a lost node or PVC doesn't lose the data.
+  backup:
+    enabled: false
+    schedule: "15 3 * * *"
+    # -- Number of dumps to keep.
+    keep: 14
+    persistence:
+      # -- Use an existing PVC for the dumps instead of creating one.
+      existingClaim: ""
+      storageClass: ""
+      accessModes: [ReadWriteOnce]
+      size: 5Gi
+    resources:
+      requests:
+        cpu: 10m
+        memory: 32Mi
+      limits:
+        memory: 256Mi
+
+# Used when postgresql.enabled is false. The password is still read from the
+# Secret (POSTGRES_PASSWORD).
+externalDatabase:
+  host: ""
+  port: 5432
+  user: tabula
+  database: tabula
+
+
+# Redis is only the Celery broker: queued scans are rebuilt from Postgres, so it
+# needs no persistence.
+redis:
+  enabled: true
+  image: redis:7-alpine
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      memory: 256Mi
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# Used when redis.enabled is false.
+externalRedis:
+  url: ""

@@ -1,0 +1,20 @@
+apiVersion: v2
+name: tabula
+description: Tabula, a social media archiver for X, Bluesky and Reddit — API, scan worker, SPA, Postgres, Redis.
+type: application
+# Placeholders: the release workflow (.github/workflows/ci.yml) packages the
+# chart with version and appVersion both set to the release (X.Y.Z) and publishes
+# it to oci://ghcr.io/zollo/charts. A source checkout has no appVersion, so
+# image tags fall back to "latest".
+version: 0.0.0-dev
+home: https://github.com/zollo/tabula
+sources:
+  - https://github.com/zollo/tabula
+keywords:
+  - social-media
+  - archive
+  - bluesky
+  - reddit
+maintainers:
+  - name: zollo
+    url: https://github.com/zollo
