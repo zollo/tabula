@@ -1,0 +1,65 @@
+[project]
+name = "tabula-backend"
+version = "0.1.0"
+description = "Tabula — a social media archiver for X, Bluesky and Reddit"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi==0.143.3",
+    "uvicorn[standard]==0.54.0",
+    "pydantic==2.14.1",
+    "pydantic-settings==2.16.0",
+    "sqlalchemy[asyncio]==2.1.5",
+    "asyncpg==0.32.0",
+    "alembic==1.20.0",
+    "psycopg2-binary==2.9.13",
+    "bcrypt==5.0.0",
+    "pyjwt==2.15.1",
+    "python-multipart==0.0.32",
+    "email-validator==2.3.0",
+    # PDF export of archived posts.
+    "fpdf2==2.8.9",
+    # Platform APIs and Google sign-in.
+    "httpx==0.28.1",
+    # Background scans/backfills (Redis is the broker only).
+    "celery[redis]==5.5.3",
+    "redis==5.2.1",
+    # Encrypts admin-saved platform credentials at rest.
+    "cryptography==46.0.3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==9.1.1",
+    "pytest-asyncio==1.4.0",
+    "ruff==0.17.1",
+    "aiosqlite==0.22.1",
+    "watchdog==6.0.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+# `pip install .` leaves a build/ copy of the package behind.
+extend-exclude = ["build"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = [
+    "B008",   # FastAPI Depends() in defaults is idiomatic
+    "UP037",  # keep quoted forward refs; SQLAlchemy resolves them by name
+]
+
+[tool.ruff.lint.isort]
+# Make section detection deterministic regardless of the runner's cwd.
+known-first-party = ["app"]
+
+[tool.ruff.lint.per-file-ignores]
+# Alembic migrations are largely generated: don't be strict about formatting.
+"app/migrations/**" = ["E501", "I001"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.setuptools.packages.find]
+include = ["app*"]

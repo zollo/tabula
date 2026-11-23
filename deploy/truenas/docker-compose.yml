@@ -1,0 +1,137 @@
+# ─────────────────────────────────────────────────────────────────────────
+# Tabula — TrueNAS SCALE (Electric Eel 24.10+) deployment
+#
+# Optimized for TrueNAS:
+#   * Uses prebuilt images from GHCR (TrueNAS does not build images).
+#   * Only the frontend port is published; everything else is internal.
+#   * The frontend reverse-proxies /api to the backend, so you reach the whole
+#     app (UI and REST API) on ONE port with no CORS.
+#   * Postgres (the source of truth, including every archived post) lives on a
+#     host dataset for snapshots/backups. Redis is only the job queue.
+#
+# Recommended install path: TrueNAS Apps → "Custom App" → Install via YAML,
+# or a compose manager like Dockge. Provide the variables via a .env file
+# (see .env.example) or by editing the values below.
+# ─────────────────────────────────────────────────────────────────────────
+name: tabula
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: tabula-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-tabula}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tabula}
+      POSTGRES_DB: ${POSTGRES_DB:-tabula}
+      # Keep data in a subdir so the mounted dataset root can hold other files.
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      # Host dataset — snapshot/backup this path. Change 'tank' to your pool.
+      - ${TABULA_DATA:-/mnt/tank/apps/tabula}/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-tabula}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: tabula-redis
+    restart: unless-stopped
+    # Broker only: scans are rebuilt from Postgres, so nothing needs persisting.
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  backend:
+    image: ghcr.io/zollo/tabula-backend:${TABULA_TAG:-latest}
+    container_name: tabula-backend
+    restart: unless-stopped
+    # Every value below is a plain environment variable you can override from any
+    # source: a .env file (Dockge / `docker compose`), the shell, or the TrueNAS
+    # Custom App "Environment Variables" section. SECRET_KEY is required; leave
+    # BOOTSTRAP_ADMIN_PASSWORD blank to have one generated and printed in the
+    # backend log on first start (see .env.example / README).
+    environment: &backend-env
+      TABULA_ENV: production
+      SECRET_KEY: ${SECRET_KEY:?Set SECRET_KEY, e.g. openssl rand -hex 32}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: ${POSTGRES_USER:-tabula}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tabula}
+      POSTGRES_DB: ${POSTGRES_DB:-tabula}
+      CORS_ORIGINS: ${TABULA_PUBLIC_URL:-http://localhost:30082}
+      TABULA_PUBLIC_URL: ${TABULA_PUBLIC_URL:-http://localhost:30082}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-1440}
+      ALLOW_REGISTRATION: ${ALLOW_REGISTRATION:-true}
+      BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-admin@example.com}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-}
+      # Platform credentials (optional; admins can also set them under Settings).
+      X_BEARER_TOKEN: ${X_BEARER_TOKEN:-}
+      REDDIT_CLIENT_ID: ${REDDIT_CLIENT_ID:-}
+      REDDIT_CLIENT_SECRET: ${REDDIT_CLIENT_SECRET:-}
+      REDIS_URL: redis://redis:6379/0
+      # Google sign-in: off unless both are set (needs an https public URL).
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips '*'"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  worker:
+    image: ghcr.io/zollo/tabula-backend:${TABULA_TAG:-latest}
+    container_name: tabula-worker
+    restart: unless-stopped
+    environment: *backend-env
+    depends_on:
+      backend:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # Scans, backfills and the scheduler (Celery beat, embedded). Keep ONE worker.
+    command: >
+      celery -A app.workers.celery_app.celery_app worker --beat
+      --schedule=/tmp/celerybeat-schedule --concurrency=4 --loglevel=info
+    # The image's HTTP healthcheck doesn't apply: ping the worker instead.
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.workers.celery_app.celery_app inspect ping --timeout 10 >/dev/null 2>&1 || exit 1"]
+      interval: 60s
+      timeout: 20s
+      retries: 5
+      start_period: 45s
+
+  frontend:
+    image: ghcr.io/zollo/tabula-frontend:${TABULA_TAG:-latest}
+    container_name: tabula-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      # The only published port. Open http://<truenas-ip>:${TABULA_PORT}.
+      - "${TABULA_PORT:-30082}:80"
+    # Explicit healthcheck with a start_period so TrueNAS marks it healthy
+    # promptly and the app leaves the "Deploying" state.
+    # Use 127.0.0.1 (not "localhost"): busybox wget may resolve localhost to
+    # ::1 first, but nginx listens on IPv4 only, so the check would fail.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:80/ || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
