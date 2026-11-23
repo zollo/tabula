@@ -38,12 +38,29 @@ def _profile(account: SocialAccount) -> ProfileInfo:
     )
 
 
-async def client_for(db: AsyncSession, platform, cfg):
-    """The API or browser client for `platform`, per the admin's source setting.
+async def client_for(db: AsyncSession, platform, cfg, *, max_wait: timedelta | None = None):
+    """The API, browser or public client for `platform`, per the admin's source
+    setting.
 
     Browser clients lease a saved login through `db`; close them with `close`.
+    Public clients pace every request through a pacer shared by all workers
+    (it commits `db` while claiming a slot).
     """
-    if settings_service.platform_source(cfg, platform) == "browser":
+    source = settings_service.platform_source(cfg, platform)
+    if source == "public":
+        from app.services.pacer_service import Pacer
+
+        pacer = Pacer(
+            db,
+            f"{platform.value}-public",
+            cfg.public_request_interval_seconds,
+            label=f"{platform.value} public pages",
+            **({"max_wait": max_wait} if max_wait is not None else {}),
+        )
+        creds = settings_service.platform_credentials(cfg)
+        user_agent = creds.get(f"{platform.value}_user_agent", "")
+        return platforms.get_public_client(platform, pacer, user_agent)
+    if source == "browser":
         from app.services.scraper_session_service import Broker
 
         broker = Broker(
@@ -132,6 +149,7 @@ async def scan(db: AsyncSession, account: SocialAccount) -> int:
     now = datetime.now(UTC)
     total = 0
     client = None
+    retry_at = None
     try:
         client, _ = await _client(db, account)
         cursor = None
@@ -144,12 +162,21 @@ async def scan(db: AsyncSession, account: SocialAccount) -> int:
                 break
             cursor = page.next_cursor
         account.last_error = None
+    except platforms.Throttled as exc:
+        # Our own pacing is full: not a failure, just come back when it frees up.
+        retry_at = exc.retry_at
+        logger.info("Scan of %s/%s deferred: %s", account.platform, account.handle, exc)
     except platforms.PlatformError as exc:
         account.last_error = str(exc)
         logger.warning("Scan of %s/%s failed: %s", account.platform, account.handle, exc)
     finally:
         if client is not None:
             await close(client)
+    if retry_at is not None and account.scan_interval_minutes:
+        # Pages fetched before the deferral are stored; the rest waits for the slot.
+        account.next_scan_at = retry_at
+        await db.commit()
+        return total
     account.last_scanned_at = now
     if account.scan_interval_minutes:
         account.next_scan_at = now + timedelta(minutes=account.scan_interval_minutes)
@@ -189,6 +216,14 @@ async def backfill(db: AsyncSession, account: SocialAccount, pages: int) -> bool
             account.backfill_touched_at = datetime.now(UTC)
             await db.commit()  # keep progress if the next page fails
         account.last_error = None
+    except platforms.Throttled as exc:
+        # Hand it back to the scheduler instead of holding a worker: a pending
+        # backfill nobody touched is queued again on the next tick after the slot.
+        account.backfill_status = BackfillStatus.pending
+        account.backfill_touched_at = exc.retry_at - REQUEUE_PENDING
+        logger.info("Backfill of %s/%s deferred: %s", account.platform, account.handle, exc)
+        await db.commit()
+        return False
     except platforms.PlatformError as exc:
         account.last_error = str(exc)
         if not exc.retryable:

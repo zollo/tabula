@@ -22,12 +22,13 @@ interface Props {
   onSave: (body: Partial<SystemSettings>, message: string) => Promise<void>;
 }
 
-/** Admin card: choose API or browser per platform, pacing, and saved logins. */
+/** Admin card: choose API, browser or public pages per platform, pacing, and saved logins. */
 export default function BrowserCollection({ settings, onSave }: Props) {
   const [sessions, setSessions] = useState<BrowserSession[]>([]);
   const [sources, setSources] = useState(settings.platform_sources);
   const [pace, setPace] = useState(settings.browser_page_interval_seconds);
   const [cap, setCap] = useState(settings.browser_daily_page_cap);
+  const [publicPace, setPublicPace] = useState(settings.public_request_interval_seconds);
   const [platform, setPlatform] = useState<Platform>(settings.browser_platforms[0] ?? "x");
   const [label, setLabel] = useState("");
   const [file, setFile] = useState<File | null>(null);
@@ -56,6 +57,7 @@ export default function BrowserCollection({ settings, onSave }: Props) {
         platform_sources: sources,
         browser_page_interval_seconds: pace,
         browser_daily_page_cap: cap,
+        public_request_interval_seconds: publicPace,
       },
       "Collection settings saved.",
     );
@@ -85,20 +87,28 @@ export default function BrowserCollection({ settings, onSave }: Props) {
   };
 
   const needsLogin = platform === "x";
+  const sourcePlatforms = [
+    ...new Set([...settings.browser_platforms, ...settings.public_platforms]),
+  ];
 
   return (
     <div className="card">
-      <h2>Browser collection</h2>
+      <h2>Collection sources</h2>
       <p className="muted small" style={{ marginTop: -6 }}>
         Instead of the API, X and Reddit can be read with a headless browser signed in with
         accounts you own. This is against both sites' terms, and they may lock or suspend those
         accounts. Tabula paces each login and stops using one the moment it's challenged.
       </p>
+      <p className="muted small">
+        Reddit can also be read from its public pages with no login, app or credentials at all.
+        Reddit allows about 10 such requests a minute per server, so Tabula spaces them out across
+        all workers and backs off when Reddit asks it to.
+      </p>
       {error && <div className="alert error">{error}</div>}
 
       <form onSubmit={saveSources}>
         <div className="grid two">
-          {settings.browser_platforms.map((p) => (
+          {sourcePlatforms.map((p) => (
             <div className="field" key={p}>
               <label htmlFor={`src-${p}`}>{PLATFORM_LABELS[p]} posts come from</label>
               <select
@@ -109,10 +119,28 @@ export default function BrowserCollection({ settings, onSave }: Props) {
                 }
               >
                 <option value="api">The API</option>
-                <option value="browser">A browser session</option>
+                {settings.browser_platforms.includes(p) && (
+                  <option value="browser">A browser session</option>
+                )}
+                {settings.public_platforms.includes(p) && (
+                  <option value="public">Public pages (no login)</option>
+                )}
               </select>
             </div>
           ))}
+          {settings.public_platforms.length > 0 && (
+            <div className="field">
+              <label htmlFor="public-pace">Seconds between public requests</label>
+              <input
+                id="public-pace"
+                type="number"
+                min={6}
+                value={publicPace}
+                onChange={(e) => setPublicPace(Number(e.target.value))}
+              />
+              <div className="help">Shared by all workers. 6 or more.</div>
+            </div>
+          )}
           <div className="field">
             <label htmlFor="pace">Seconds between pages, per login</label>
             <input

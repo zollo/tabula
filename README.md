@@ -39,7 +39,7 @@ creates can track straight away. The first admin is created on startup from
 | Platform | How | Credentials | History reach |
 |---|---|---|---|
 | **Bluesky** | Public AppView (`app.bsky.feed.getAuthorFeed`) | None | Full history |
-| **Reddit** | OAuth API, app-only token (`/user/{name}/overview`) | A "script" app from [reddit.com/prefs/apps](https://www.reddit.com/prefs/apps): `REDDIT_CLIENT_ID` / `_SECRET` | About 1,000 most recent items (Reddit's listing limit) |
+| **Reddit** | OAuth API, app-only token (`/user/{name}/overview`), or [public pages](#reddit-without-a-login) with no login | A "script" app from [reddit.com/prefs/apps](https://www.reddit.com/prefs/apps): `REDDIT_CLIENT_ID` / `_SECRET`; none for public pages | About 1,000 most recent items (Reddit's listing limit) |
 | **X** | API v2 (`/2/users/{id}/tweets`) | App bearer token, `X_BEARER_TOKEN`. Reading timelines needs a **paid X API tier** | 3,200 most recent posts (X's limit) |
 
 Credentials can come from environment variables or be saved by an admin under
@@ -91,7 +91,7 @@ credentials under **Settings**. The API is on http://localhost:8000 (`/docs`).
 ## Browser collection
 
 X and Reddit can be collected with a headless browser instead of their APIs
-(**Settings → Browser collection**, per platform). On X this needs no paid API
+(**Settings → Collection sources**, per platform). On X this needs no paid API
 and reaches further back: it walks a "Latest" search for `from:<handle>` with a
 `max_id` cursor instead of the profile timeline's ~3,200-post limit. On Reddit
 it reaches the same ~1,000 items as the API.
@@ -113,6 +113,31 @@ it reaches the same ~1,000 items as the API.
   changes without notice: when it does, scans report "didn't return any data"
   until the parser is updated. Automated access is against X's and Reddit's
   terms, and accounts used this way may be locked or suspended.
+
+## Reddit without a login
+
+Pick **Public pages (no login)** for Reddit under **Settings → Collection
+sources** to collect posts and comments with no API app, token, account or
+browser at all. The regular API worker reads the same public `.json` views that
+reddit.com serves signed-out visitors (`/user/<name>/about.json` and
+`/user/<name>/overview.json?sort=new`, 100 items a page) and parses them like
+the API's responses. It reaches the same ~1,000 most recent items.
+
+- **Pacing.** Reddit allows about 10 unauthenticated requests a minute per IP,
+  and all of Tabula's workers usually share one IP, so requests are paced
+  globally through the database: each claims the next slot (*Seconds between
+  public requests*, default 10, minimum 6) and waits for it. When the queue of
+  slots is more than a minute long, scans and backfills step aside and are picked
+  up again by the scheduler when their slot comes round instead of holding a
+  worker.
+- **Backing off.** Tabula honours Reddit's `x-ratelimit-remaining`/`-reset`
+  headers and `429`s by pausing every worker until the window resets, and an
+  HTML `403` ("blocked") pauses public requests for 15 minutes. Reddit blocks
+  many datacenter IPs outright; a home connection usually works.
+- **User agent.** Requests send `REDDIT_USER_AGENT` (or the saved value);
+  Reddit throttles generic agents hardest, so keep it descriptive.
+- **Terms.** Public pages need no account, but Reddit's terms still govern
+  automated access to them.
 
 ## Local development without Docker
 

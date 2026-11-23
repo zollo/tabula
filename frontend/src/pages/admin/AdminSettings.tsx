@@ -6,7 +6,7 @@ import BrowserCollection from "./BrowserCollection";
 
 // PATCH body: credentials are new values (or null to clear), unlike the read shape.
 type SettingsUpdate = Partial<
-  Omit<SystemSettings, "credentials" | "credential_values" | "browser_platforms">
+  Omit<SystemSettings, "credentials" | "credential_values" | "browser_platforms" | "public_platforms">
 > & {
   credentials?: Record<string, string | null>;
 };
@@ -33,7 +33,7 @@ const CREDENTIALS: { platform: Platform; fields: CredentialField[]; note: string
   },
   {
     platform: "reddit",
-    note: "Create a \"script\" app at reddit.com/prefs/apps. Reddit only lists about 1,000 items per user.",
+    note: "Create a \"script\" app at reddit.com/prefs/apps, or pick \"Public pages\" under Collection sources to need none. Reddit only lists about 1,000 items per user.",
     fields: [
       { key: "reddit_client_id", label: "Client ID", secret: false },
       { key: "reddit_client_secret", label: "Client secret", secret: true },

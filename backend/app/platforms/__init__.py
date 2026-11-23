@@ -10,6 +10,7 @@ from app.platforms.base import (
     PlatformNotConfigured,
     ProfileInfo,
     ProfileNotFound,
+    Throttled,
 )
 from app.platforms.bluesky import BlueskyClient
 from app.platforms.reddit import RedditClient
@@ -43,6 +44,16 @@ def get_browser_client(platform: Platform, broker):
     raise PlatformNotConfigured(f"{platform} can't be collected with a browser")
 
 
+def get_public_client(platform: Platform, pacer, user_agent: str) -> PlatformClient:
+    """A client for `platform`'s public pages: no login or credentials, paced by
+    `pacer` (pacer_service.Pacer), which every worker shares."""
+    if platform == Platform.reddit:
+        from app.platforms.reddit_public import RedditPublicClient
+
+        return RedditPublicClient(pacer, user_agent)
+    raise PlatformNotConfigured(f"{platform} can't be collected without a login")
+
+
 __all__ = [
     "FetchedPost",
     "Page",
@@ -51,6 +62,8 @@ __all__ = [
     "PlatformNotConfigured",
     "ProfileInfo",
     "ProfileNotFound",
+    "Throttled",
     "get_browser_client",
+    "get_public_client",
     "get_client",
 ]
