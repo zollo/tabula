@@ -65,22 +65,15 @@ class RedditClient:
             raise PlatformError(f"Could not reach Reddit: {exc}", retryable=True) from exc
 
     async def resolve(self, handle: str) -> ProfileInfo:
-        name = handle.strip().removeprefix("/").removeprefix("u/").removeprefix("@")
+        name = handle_from(handle)
         resp = await self._get(f"/user/{name}/about", {"raw_json": 1})
         if resp.status_code in (403, 404):
             raise ProfileNotFound(f"Reddit user {name!r} not found or suspended")
         raise_for_status(resp, "Reddit profile lookup")
-        data = resp.json().get("data") or {}
-        if not data.get("id"):
+        profile = profile_from_about(resp.json())
+        if profile is None:
             raise ProfileNotFound(f"Reddit user {name!r} not found or suspended")
-        icon = (data.get("icon_img") or "").split("?")[0] or None
-        return ProfileInfo(
-            external_id=f"t2_{data['id']}",
-            handle=data["name"],
-            display_name=(data.get("subreddit") or {}).get("title") or data["name"],
-            avatar_url=icon,
-            profile_url=f"https://www.reddit.com/user/{data['name']}",
-        )
+        return profile
 
     async def fetch_page(self, profile: ProfileInfo, cursor: str | None = None) -> Page:
         params: dict = {"limit": 100, "raw_json": 1, "sort": "new"}
@@ -88,34 +81,56 @@ class RedditClient:
             params["after"] = cursor
         resp = await self._get(f"/user/{profile.handle}/overview", params)
         raise_for_status(resp, "Reddit listing")
-        data = resp.json().get("data") or {}
-        posts = [self._to_post(child) for child in data.get("children", [])]
-        return Page(posts=posts, next_cursor=data.get("after") or None)
+        return page_from_listing(resp.json())
 
-    @staticmethod
-    def _to_post(child: dict) -> FetchedPost:
-        d = child["data"]
-        is_comment = child.get("kind") == "t1"
-        if is_comment:
-            text = d.get("body", "")
-        else:
-            text = d.get("title", "")
-            if d.get("selftext"):
-                text = f"{text}\n\n{d['selftext']}"
-        media: list[str] = []
-        if not is_comment and d.get("post_hint") == "image" and d.get("url"):
-            media.append(d["url"])
-        return FetchedPost(
-            external_id=d["name"],  # t1_… / t3_…
-            posted_at=datetime.fromtimestamp(d["created_utc"], tz=UTC),
-            text=text,
-            kind=PostKind.comment if is_comment else PostKind.post,
-            url=f"https://www.reddit.com{d['permalink']}" if d.get("permalink") else None,
-            media=media,
-            metrics={
-                "score": d.get("score", 0),
-                "comments": d.get("num_comments", 0),
-                "subreddit": d.get("subreddit_name_prefixed"),
-            },
-            raw=child,
-        )
+
+def handle_from(handle: str) -> str:
+    return handle.strip().removeprefix("/").removeprefix("u/").removeprefix("@")
+
+
+def profile_from_about(body: dict) -> ProfileInfo | None:
+    data = (body or {}).get("data") or {}
+    if not data.get("id"):
+        return None
+    icon = (data.get("icon_img") or "").split("?")[0] or None
+    return ProfileInfo(
+        external_id=f"t2_{data['id']}",
+        handle=data["name"],
+        display_name=(data.get("subreddit") or {}).get("title") or data["name"],
+        avatar_url=icon,
+        profile_url=f"https://www.reddit.com/user/{data['name']}",
+    )
+
+
+def page_from_listing(body: dict) -> Page:
+    data = (body or {}).get("data") or {}
+    posts = [to_post(child) for child in data.get("children", [])]
+    return Page(posts=posts, next_cursor=data.get("after") or None)
+
+
+def to_post(child: dict) -> FetchedPost:
+    d = child["data"]
+    is_comment = child.get("kind") == "t1"
+    if is_comment:
+        text = d.get("body", "")
+    else:
+        text = d.get("title", "")
+        if d.get("selftext"):
+            text = f"{text}\n\n{d['selftext']}"
+    media: list[str] = []
+    if not is_comment and d.get("post_hint") == "image" and d.get("url"):
+        media.append(d["url"])
+    return FetchedPost(
+        external_id=d["name"],  # t1_… / t3_…
+        posted_at=datetime.fromtimestamp(d["created_utc"], tz=UTC),
+        text=text,
+        kind=PostKind.comment if is_comment else PostKind.post,
+        url=f"https://www.reddit.com{d['permalink']}" if d.get("permalink") else None,
+        media=media,
+        metrics={
+            "score": d.get("score", 0),
+            "comments": d.get("num_comments", 0),
+            "subreddit": d.get("subreddit_name_prefixed"),
+        },
+        raw=child,
+    )

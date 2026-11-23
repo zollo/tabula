@@ -45,6 +45,10 @@ app.kubernetes.io/component: {{ index . 1 }}
 {{- printf "%s:%s" .Values.image.backend (include "tabula.tag" .) }}
 {{- end }}
 
+{{- define "tabula.browserImage" -}}
+{{- printf "%s:%s" .Values.image.browser (include "tabula.tag" .) }}
+{{- end }}
+
 {{- define "tabula.frontendImage" -}}
 {{- printf "%s:%s" .Values.image.frontend (include "tabula.tag" .) }}
 {{- end }}

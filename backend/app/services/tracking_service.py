@@ -132,9 +132,21 @@ async def add_tracking(
     is_new = False
     now = datetime.now(UTC)
     if account is None:
-        client = platforms.get_client(platform, settings_service.platform_credentials(cfg))
+        source = settings_service.platform_source(cfg, platform)
         try:
-            profile = await client.resolve(handle)
+            if source == "browser":
+                if not await settings_service.platform_ready(db, cfg, platform):
+                    raise Invalid(
+                        f"{PLATFORM_LABELS[platform]} has no working browser session yet; "
+                        "an administrator needs to add one"
+                    )
+                # The API has no browser: the browser worker looks it up.
+                profile = await dispatch.resolve_in_browser(platform, handle)
+            else:
+                client = platforms.get_client(
+                    platform, settings_service.platform_credentials(cfg)
+                )
+                profile = await client.resolve(handle)
         except platforms.ProfileNotFound as exc:
             raise NotFound(str(exc)) from exc
         except platforms.PlatformError as exc:
@@ -180,7 +192,10 @@ async def add_tracking(
         account.backfill_touched_at = now
         await db.commit()
         await db.refresh(tracking)
-        dispatch.enqueue_backfill(account.id)
+        dispatch.enqueue_backfill(
+            account.id,
+            dispatch.queue_for(settings_service.platform_source(cfg, account.platform)),
+        )
     return tracking
 
 

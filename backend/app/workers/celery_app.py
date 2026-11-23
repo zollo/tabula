@@ -17,6 +17,11 @@ celery_app.conf.update(
     result_expires=3600,
     # Fail fast when the API publishes and Redis is down (dispatch.py logs it).
     broker_connection_timeout=3,
+    # API-based work goes to `default`; browser collection and lookups go to
+    # `browser` (see dispatch.queue_for), served by the browser worker.
+    task_default_queue="default",
+    # Browser tasks are slow; don't let one process hoard several of them.
+    worker_prefetch_multiplier=1,
     # Every tick, queue the accounts that are due for a scan, and any backfill
     # that is pending or looks abandoned.
     beat_schedule={

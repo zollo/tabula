@@ -1305,6 +1305,178 @@
           }
         }
       }
+    },
+    "/api/browser-sessions": {
+      "get": {
+        "tags": [
+          "browser sessions"
+        ],
+        "summary": "List Browser Sessions",
+        "operationId": "list_browser_sessions",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ScraperSessionRead"
+                  },
+                  "type": "array",
+                  "title": "Response List Browser Sessions"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "browser sessions"
+        ],
+        "summary": "Create Browser Session",
+        "description": "Save a login captured with `python -m app.tools.capture_session`.",
+        "operationId": "create_browser_session",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScraperSessionCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScraperSessionRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/browser-sessions/{session_id}": {
+      "patch": {
+        "tags": [
+          "browser sessions"
+        ],
+        "summary": "Update Browser Session",
+        "operationId": "update_browser_session",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScraperSessionUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScraperSessionRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "browser sessions"
+        ],
+        "summary": "Delete Browser Session",
+        "operationId": "delete_browser_session",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -1682,6 +1854,180 @@
         ],
         "title": "RegisterRequest"
       },
+      "ScraperSessionCreate": {
+        "properties": {
+          "platform": {
+            "$ref": "#/components/schemas/Platform"
+          },
+          "label": {
+            "type": "string",
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Label"
+          },
+          "storage_state": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 2000000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Storage State"
+          }
+        },
+        "type": "object",
+        "required": [
+          "platform",
+          "label"
+        ],
+        "title": "ScraperSessionCreate"
+      },
+      "ScraperSessionRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "platform": {
+            "$ref": "#/components/schemas/Platform"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "signed_in": {
+            "type": "boolean",
+            "title": "Signed In"
+          },
+          "status": {
+            "$ref": "#/components/schemas/SessionStatus"
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error"
+          },
+          "cooldown_until": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cooldown Until"
+          },
+          "in_use": {
+            "type": "boolean",
+            "title": "In Use"
+          },
+          "last_used_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Used At"
+          },
+          "pages_today": {
+            "type": "integer",
+            "title": "Pages Today"
+          },
+          "pages_total": {
+            "type": "integer",
+            "title": "Pages Total"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "platform",
+          "label",
+          "signed_in",
+          "status",
+          "last_error",
+          "cooldown_until",
+          "in_use",
+          "last_used_at",
+          "pages_today",
+          "pages_total",
+          "created_at"
+        ],
+        "title": "ScraperSessionRead"
+      },
+      "ScraperSessionUpdate": {
+        "properties": {
+          "label": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 255,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label"
+          },
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled"
+          },
+          "storage_state": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 2000000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Storage State"
+          }
+        },
+        "type": "object",
+        "title": "ScraperSessionUpdate"
+      },
+      "SessionStatus": {
+        "type": "string",
+        "enum": [
+          "active",
+          "cooling_down",
+          "needs_attention",
+          "disabled"
+        ],
+        "title": "SessionStatus"
+      },
       "SocialAccountRead": {
         "properties": {
           "id": {
@@ -1853,6 +2199,35 @@
             },
             "type": "object",
             "title": "Credential Values"
+          },
+          "platform_sources": {
+            "additionalProperties": {
+              "type": "string",
+              "enum": [
+                "api",
+                "browser"
+              ]
+            },
+            "propertyNames": {
+              "$ref": "#/components/schemas/Platform"
+            },
+            "type": "object",
+            "title": "Platform Sources"
+          },
+          "browser_platforms": {
+            "items": {
+              "$ref": "#/components/schemas/Platform"
+            },
+            "type": "array",
+            "title": "Browser Platforms"
+          },
+          "browser_page_interval_seconds": {
+            "type": "integer",
+            "title": "Browser Page Interval Seconds"
+          },
+          "browser_daily_page_cap": {
+            "type": "integer",
+            "title": "Browser Daily Page Cap"
           }
         },
         "type": "object",
@@ -1864,7 +2239,11 @@
           "max_trackings_per_user",
           "backfill_max_posts",
           "credentials",
-          "credential_values"
+          "credential_values",
+          "platform_sources",
+          "browser_platforms",
+          "browser_page_interval_seconds",
+          "browser_daily_page_cap"
         ],
         "title": "SystemSettingsRead"
       },
@@ -1946,6 +2325,53 @@
               }
             ],
             "title": "Backfill Max Posts"
+          },
+          "platform_sources": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string",
+                  "enum": [
+                    "api",
+                    "browser"
+                  ]
+                },
+                "propertyNames": {
+                  "$ref": "#/components/schemas/Platform"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform Sources"
+          },
+          "browser_page_interval_seconds": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 3600.0,
+                "minimum": 5.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Browser Page Interval Seconds"
+          },
+          "browser_daily_page_cap": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 100000.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Browser Daily Page Cap"
           },
           "credentials": {
             "additionalProperties": {

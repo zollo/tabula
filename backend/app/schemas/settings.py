@@ -8,13 +8,15 @@ from pydantic import BaseModel, Field
 from app.models.platform import Platform
 
 CredentialSource = Literal["saved", "environment", "unset"]
+Source = Literal["api", "browser"]
 
 
 class PlatformOption(BaseModel):
     value: Platform
     label: str
     enabled: bool
-    # Credentials are in place, so adding accounts can work.
+    # Credentials (or, for the browser source, a working session) are in
+    # place, so adding accounts can work.
     configured: bool
 
 
@@ -36,6 +38,11 @@ class SystemSettingsRead(BaseModel):
     credentials: dict[str, CredentialSource]
     # Non-secret credential values in effect (e.g. Reddit user agent).
     credential_values: dict[str, str]
+    # Where each platform's posts come from; only X and Reddit offer "browser".
+    platform_sources: dict[Platform, Source]
+    browser_platforms: list[Platform]
+    browser_page_interval_seconds: int
+    browser_daily_page_cap: int
 
 
 class SystemSettingsUpdate(BaseModel):
@@ -45,6 +52,10 @@ class SystemSettingsUpdate(BaseModel):
     default_scan_interval_minutes: int | None = Field(default=None, ge=1, le=10080)
     max_trackings_per_user: int | None = Field(default=None, ge=0, le=100000)
     backfill_max_posts: int | None = Field(default=None, ge=0, le=10_000_000)
+    platform_sources: dict[Platform, Source] | None = None
+    browser_page_interval_seconds: int | None = Field(default=None, ge=5, le=3600)
+    # 0 = no daily cap.
+    browser_daily_page_cap: int | None = Field(default=None, ge=0, le=100_000)
     # Set a value to save it (encrypted); "" or null clears the saved value so
     # the env var applies again. Omitted keys are left alone.
     credentials: dict[str, str | None] = Field(default_factory=dict)

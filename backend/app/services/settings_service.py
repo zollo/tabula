@@ -40,6 +40,9 @@ async def get(db: AsyncSession) -> SystemSettings:
             max_trackings_per_user=25,
             backfill_max_posts=5000,
             credentials={},
+            platform_sources={},
+            browser_page_interval_seconds=20,
+            browser_daily_page_cap=400,
         )
         db.add(row)
         await db.commit()
@@ -78,12 +81,33 @@ def credential_sources(row: SystemSettings) -> dict[str, str]:
     return out
 
 
+# Platforms whose posts can be collected with a browser instead of the API.
+BROWSER_PLATFORMS = (Platform.x, Platform.reddit)
+SOURCES = ("api", "browser")
+
+
+def platform_source(row: SystemSettings, platform: Platform) -> str:
+    """'api' or 'browser': where this platform's posts come from."""
+    source = (row.platform_sources or {}).get(platform.value, "api")
+    return source if platform in BROWSER_PLATFORMS and source in SOURCES else "api"
+
+
 def platform_configured(platform: Platform, creds: dict[str, str]) -> bool:
+    """API credentials are in place (see platform_ready for the browser source)."""
     if platform == Platform.x:
         return bool(creds["x_bearer_token"])
     if platform == Platform.reddit:
         return bool(creds["reddit_client_id"] and creds["reddit_client_secret"])
     return bool(creds["bluesky_appview_url"])
+
+
+async def platform_ready(db: AsyncSession, row: SystemSettings, platform: Platform) -> bool:
+    """Whether adding and scanning accounts on this platform can work right now."""
+    if platform_source(row, platform) == "browser":
+        from app.services import scraper_session_service
+
+        return await scraper_session_service.has_usable_session(db, platform)
+    return platform_configured(platform, platform_credentials(row))
 
 
 async def update(
@@ -93,6 +117,16 @@ async def update(
     row = await get(db)
     if "enabled_platforms" in changes and changes["enabled_platforms"] is not None:
         changes["enabled_platforms"] = [Platform(p).value for p in changes["enabled_platforms"]]
+    if changes.get("platform_sources") is not None:
+        sources = dict(row.platform_sources or {})
+        for key, value in changes["platform_sources"].items():
+            platform = Platform(key.value if isinstance(key, Platform) else key)
+            if value not in SOURCES:
+                raise Invalid(f"Unknown source {value!r} (use api or browser)")
+            if value == "browser" and platform not in BROWSER_PLATFORMS:
+                raise Invalid(f"{platform.value} can't be collected with a browser")
+            sources[platform.value] = value
+        changes["platform_sources"] = sources
     for key, value in changes.items():
         if value is not None:
             setattr(row, key, value)

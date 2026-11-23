@@ -21,7 +21,29 @@ COPY . .
 EXPOSE 8000
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
 
-# ── Prod target ─────────────────────────────────────────────────────────
+# ── Browser worker (X/Reddit browser collection) ───────────────────────
+# The backend plus Playwright and headless Chromium; serves only the `browser`
+# Celery queue. Built and published as tabula-browser.
+FROM base AS browser
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN pip install ".[browser]" \
+    && playwright install --with-deps chromium \
+    && rm -rf /var/lib/apt/lists/*
+COPY . .
+RUN pip install "." --no-deps
+RUN useradd -m -u 1000 appuser && chown -R appuser /app
+USER appuser
+ARG APP_VERSION=dev
+ARG GIT_COMMIT=unknown
+ARG BUILD_TIME=unknown
+ENV TABULA_VERSION=$APP_VERSION \
+    TABULA_GIT_COMMIT=$GIT_COMMIT \
+    TABULA_BUILD_TIME=$BUILD_TIME
+HEALTHCHECK --interval=60s --timeout=20s --start-period=60s --retries=3 \
+    CMD celery -A app.workers.celery_app.celery_app inspect ping -d "celery@$HOSTNAME" --timeout 15 >/dev/null 2>&1 || exit 1
+CMD ["celery", "-A", "app.workers.celery_app.celery_app", "worker", "-Q", "browser", "--concurrency=2", "--loglevel=info"]
+
+# ── Prod target (the default: keep it last) ─────────────────────────────────────────────────────────
 FROM base AS prod
 COPY . .
 RUN pip install "." --no-deps

@@ -134,14 +134,27 @@ jobs:
           # The archive is never public.
           code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/api/trackings)
           test "$code" = "401"
-      - name: Check the scan worker
+      - name: Check the workers and the scheduler
         run: |
-          for i in $(seq 1 30); do
-            docker compose -f docker-compose.yml exec -T worker \
-              celery -A app.workers.celery_app.celery_app inspect ping --timeout 5 && exit 0
-            echo "waiting for worker... ($i)"; sleep 3
+          for svc in worker browser-worker; do
+            ok=
+            for i in $(seq 1 40); do
+              if docker compose -f docker-compose.yml exec -T "$svc" \
+                   sh -c 'celery -A app.workers.celery_app.celery_app inspect ping -d "celery@$HOSTNAME" --timeout 5'; then
+                ok=1; break
+              fi
+              echo "waiting for $svc... ($i)"; sleep 3
+            done
+            test -n "$ok"
           done
-          exit 1
+          # The browser worker can start Chromium.
+          docker compose -f docker-compose.yml exec -T browser-worker python -c "
+          import asyncio
+          from app.platforms.browser import PlaywrightDriver
+          async def main():
+              d = PlaywrightDriver(); await d.start(None); await d.close()
+          asyncio.run(main()); print('chromium ok')"
+          test "$(docker compose -f docker-compose.yml ps --status running -q beat | wc -l)" = 1
       - name: Dump logs on failure
         if: failure()
         run: docker compose -f docker-compose.yml logs
@@ -270,8 +283,13 @@ jobs:
         include:
           - name: backend
             context: ./backend
+            target: prod
+          - name: browser
+            context: ./backend
+            target: browser
           - name: frontend
             context: ./frontend
+            target: prod
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
@@ -301,6 +319,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: ${{ matrix.context }}
+          target: ${{ matrix.target }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -308,8 +327,8 @@ jobs:
             APP_VERSION=${{ needs.version.outputs.version }}
             GIT_COMMIT=${{ github.sha }}
             BUILD_TIME=${{ steps.bt.outputs.value }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
       - name: Sign image (keyless)
         env:
           IMAGE: ${{ env.REGISTRY }}/${{ github.repository }}-${{ matrix.name }}

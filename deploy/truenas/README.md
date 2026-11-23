@@ -69,6 +69,13 @@ but they can only track accounts once you enable them under **Users**.
 proxy or tunnel) with `TABULA_PUBLIC_URL` set to that URL; it won't work on a
 plain `http://<truenas-ip>:30082` address.
 
+**Browser collection** (optional): instead of API credentials, X and Reddit
+can be read by the `tabula-browser-worker` container with logins you save
+under **Settings → Browser collection**. See the main README's *Browser
+collection* section, including the terms-of-service caveat. Each Chromium
+process uses ~300-500 MB; set `BROWSER_WORKER_CONCURRENCY` to roughly the
+number of saved logins.
+
 ## 5. Backups
 
 Snapshot (and optionally replicate) the `TABULA_DATA` dataset — it holds the full

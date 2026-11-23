@@ -1,0 +1,35 @@
+{{- /* Headless Chromium for X/Reddit browser collection (the `browser` queue). */ -}}
+{{- if .Values.browserWorker.enabled }}
+{{- $replicas := .Values.browserWorker.replicas }}
+{{- if .Values.browserWorker.keda.enabled }}{{ $replicas = .Values.browserWorker.keda.minReplicas }}{{ end }}
+{{- include "tabula.celeryDeployment" (dict
+      "root" $
+      "name" "browser-worker"
+      "cfg" .Values.browserWorker
+      "image" (include "tabula.browserImage" .)
+      "replicas" $replicas
+      "args" (list "celery" "-A" "app.workers.celery_app.celery_app" "worker" "-Q" "browser"
+                   (printf "--concurrency=%v" .Values.browserWorker.concurrency) "--loglevel=info")) }}
+{{- if .Values.browserWorker.keda.enabled }}
+---
+# Scale on the length of the `browser` queue in Redis (needs KEDA installed).
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ include "tabula.fullname" . }}-browser-worker
+  labels:
+    {{- include "tabula.labels" . | nindent 4 }}
+    app.kubernetes.io/component: browser-worker
+spec:
+  scaleTargetRef:
+    name: {{ include "tabula.fullname" . }}-browser-worker
+  minReplicaCount: {{ .Values.browserWorker.keda.minReplicas }}
+  maxReplicaCount: {{ .Values.browserWorker.keda.maxReplicas }}
+  triggers:
+    - type: redis
+      metadata:
+        address: {{ .Values.browserWorker.keda.redisAddress | default (printf "%s-redis:6379" (include "tabula.fullname" .)) | quote }}
+        listName: browser
+        listLength: {{ .Values.browserWorker.keda.queueLengthPerReplica | quote }}
+{{- end }}
+{{- end }}

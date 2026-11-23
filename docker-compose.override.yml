@@ -20,8 +20,22 @@ services:
       - ./backend:/app
     command: >
       watchmedo auto-restart --directory=/app/app --pattern='*.py' --recursive --
-      celery -A app.workers.celery_app.celery_app worker --beat
-      --schedule=/tmp/celerybeat-schedule --loglevel=info
+      celery -A app.workers.celery_app.celery_app worker -Q default --loglevel=info
+
+  beat:
+    build:
+      context: ./backend
+      target: dev
+    volumes:
+      - ./backend:/app
+
+  browser-worker:
+    volumes:
+      - ./backend:/app
+    command: >
+      watchmedo auto-restart --directory=/app/app --pattern='*.py' --recursive --
+      celery -A app.workers.celery_app.celery_app worker -Q browser --concurrency=1
+      --loglevel=info
 
   frontend:
     build:

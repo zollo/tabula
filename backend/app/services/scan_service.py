@@ -38,9 +38,37 @@ def _profile(account: SocialAccount) -> ProfileInfo:
     )
 
 
+async def client_for(db: AsyncSession, platform, cfg):
+    """The API or browser client for `platform`, per the admin's source setting.
+
+    Browser clients lease a saved login through `db`; close them with `close`.
+    """
+    if settings_service.platform_source(cfg, platform) == "browser":
+        from app.services.scraper_session_service import Broker
+
+        broker = Broker(
+            db,
+            platform,
+            interval_seconds=cfg.browser_page_interval_seconds,
+            daily_cap=cfg.browser_daily_page_cap,
+        )
+        return platforms.get_browser_client(platform, broker)
+    return platforms.get_client(platform, settings_service.platform_credentials(cfg))
+
+
+async def close(client) -> None:
+    """Release a browser client's login and browser (no-op for API clients)."""
+    aclose = getattr(client, "aclose", None)
+    if aclose is not None:
+        try:
+            await aclose()
+        except Exception:  # noqa: BLE001
+            logger.warning("Closing the %s client failed", client.platform, exc_info=True)
+
+
 async def _client(db: AsyncSession, account: SocialAccount):
     cfg = await settings_service.get(db)
-    return platforms.get_client(account.platform, settings_service.platform_credentials(cfg)), cfg
+    return await client_for(db, account.platform, cfg), cfg
 
 
 async def store_posts(db: AsyncSession, account: SocialAccount, fetched: list[FetchedPost]) -> int:
@@ -103,6 +131,7 @@ async def scan(db: AsyncSession, account: SocialAccount) -> int:
     """Fetch posts newer than the archive. Returns how many new posts were stored."""
     now = datetime.now(UTC)
     total = 0
+    client = None
     try:
         client, _ = await _client(db, account)
         cursor = None
@@ -118,6 +147,9 @@ async def scan(db: AsyncSession, account: SocialAccount) -> int:
     except platforms.PlatformError as exc:
         account.last_error = str(exc)
         logger.warning("Scan of %s/%s failed: %s", account.platform, account.handle, exc)
+    finally:
+        if client is not None:
+            await close(client)
     account.last_scanned_at = now
     if account.scan_interval_minutes:
         account.next_scan_at = now + timedelta(minutes=account.scan_interval_minutes)
@@ -135,6 +167,7 @@ async def backfill(db: AsyncSession, account: SocialAccount, pages: int) -> bool
         account.backfill_status = BackfillStatus.running
         account.backfill_started_at = account.backfill_started_at or now
     account.backfill_touched_at = now
+    client = None
     try:
         client, cfg = await _client(db, account)
         for _ in range(pages):
@@ -158,6 +191,9 @@ async def backfill(db: AsyncSession, account: SocialAccount, pages: int) -> bool
         await db.commit()
         # Retryable errors leave it `running`; the scheduler re-queues stale ones.
         return False
+    finally:
+        if client is not None:
+            await close(client)
     await db.commit()
     return account.backfill_status == BackfillStatus.running
 

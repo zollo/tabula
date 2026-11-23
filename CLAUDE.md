@@ -22,7 +22,9 @@ pytest tests/test_tracking.py::test_add_tracking_backfills_history
 alembic upgrade head && alembic check            # migrations apply and match the models
 python -m app.openapi_export ../docs/openapi.json   # or `make openapi`
 uvicorn app.main:app --reload
-celery -A app.workers.celery_app.celery_app worker --beat --loglevel=info
+celery -A app.workers.celery_app.celery_app beat --loglevel=info              # scheduler (one)
+celery -A app.workers.celery_app.celery_app worker -Q default --loglevel=info   # API scans
+celery -A app.workers.celery_app.celery_app worker -Q browser --loglevel=info   # needs ".[browser]"
 ```
 
 Frontend (`cd frontend`):
@@ -35,7 +37,7 @@ npm test             # vitest
 
 ## Architecture
 
-**Services:** `backend` (FastAPI, REST at `/api`), `worker` (same backend image running Celery + embedded beat), `frontend` (React/Vite SPA served by nginx), Postgres, Redis (Celery broker only, no durable data).
+**Services:** `backend` (FastAPI, REST at `/api`), `beat` (the scheduler, exactly one), `worker` (backend image, Celery on the `default` queue), `browser-worker` (`browser` Dockerfile target / `tabula-browser` image with Playwright + Chromium, Celery on the `browser` queue), `frontend` (React/Vite SPA served by nginx), Postgres, Redis (Celery broker only, no durable data).
 
 **Service layer.** `app/services/*` hold all logic and permission checks and raise `core/errors.TabulaError` subclasses; routes (`app/api/routes/*`) map them to HTTP via an exception handler in `main.py`. `docs/openapi.json` is the published contract (CI fails if stale; `make openapi`).
 
@@ -49,7 +51,9 @@ npm test             # vitest
 
 **Scanning** (`services/scan_service.py`, `workers/tasks.py`): beat runs `schedule_due_work` every `SCHEDULER_TICK_SECONDS`. It claims due accounts with a conditional `UPDATE … WHERE next_scan_at = <seen>` (so a scan is queued once per slot) and re-queues backfills by `backfill_touched_at`: `pending` ones untouched for 5 min, `running` ones for 30 min (claiming bumps it, so each is re-queued once). "Scan now" just sets `next_scan_at` to now (works while paused); the next tick picks it up. `scan` pages from newest until a page contains a known post (max 5 pages). `backfill` resumes from `backfill_cursor`, does `BACKFILL_PAGES_PER_RUN` pages per task, commits after each page (touching `backfill_touched_at`), re-queues itself, and stops at the end of history or `backfill_max_posts`. Each new post is inserted in a savepoint, so a scan and a backfill storing the same post concurrently skip the duplicate instead of failing. The API only queues backfills directly (`workers/dispatch.py`), best-effort: if Redis is down the request still succeeds and the scheduler catches up.
 
-**System settings** (`models/system_settings.py`, singleton row id=1, created on first read): sign-up on/off (initial value from `ALLOW_REGISTRATION`), enabled platforms, min/default scan interval, trackings per user, backfill cap, and platform credentials. Credentials default to env vars; an admin-saved value (Fernet-encrypted with a key derived from `SECRET_KEY`) wins per key; the API only ever reports each key's source (`saved`/`environment`/`unset`), never secret values. Rotating `SECRET_KEY` makes saved credentials unreadable (logged, env used instead).
+**Browser collection** (`platforms/browser/`, `services/scraper_session_service.py`): `SystemSettings.platform_sources` picks `api` or `browser` per platform (X and Reddit only; `settings_service.platform_source`). `scan_service.client_for` builds the matching client; browser clients implement the same `resolve`/`fetch_page` contract, lease a `ScraperSession` (saved Playwright storage state, Fernet-encrypted) through a `Broker`, pace page loads (`browser_page_interval_seconds`), count them against `browser_daily_page_cap`, and release with an outcome (`ok`, `rate_limited` → 15 min cooldown, `challenged` → `needs_attention`, `error`). Always `scan_service.close(client)` when done. They never parse HTML: `PlaywrightDriver.collect` captures JSON responses matching a URL fragment while scrolling (X `SearchTimeline`/`UserByScreenName`), `get_json` loads Reddit `.json` URLs. X pages with `max_id:<oldest-1>` search cursors. Queues: `dispatch.queue_for(source)`; the scheduler and backfill re-queue route by the account's platform source. The API has no browser, so adding an account on a browser platform runs `resolve_profile` on the browser worker and waits for the result (`dispatch.resolve_in_browser`, Redis result backend, 120 s timeout). `app/tools/capture_session.py` is a standalone script users run on their own machine. Never add anti-bot evasion (CAPTCHA solving, fingerprint spoofing, proxy rotation): a challenged login is parked for an admin.
+
+**System settings** (`models/system_settings.py`, singleton row id=1, created on first read): sign-up on/off (initial value from `ALLOW_REGISTRATION`), enabled platforms, platform sources and browser pacing, min/default scan interval, trackings per user, backfill cap, and platform credentials. Credentials default to env vars; an admin-saved value (Fernet-encrypted with a key derived from `SECRET_KEY`) wins per key; the API only ever reports each key's source (`saved`/`environment`/`unset`), never secret values. Rotating `SECRET_KEY` makes saved credentials unreadable (logged, env used instead).
 
 **Auth:** `Authorization: Bearer` session JWT (`/api/auth/login`, stored in localStorage by the SPA). **Google sign-in** (`services/google_auth.py`, on only when `GOOGLE_CLIENT_ID`/`_SECRET` are set) is a stateless OIDC code flow with PKCE: `POST /api/auth/google/authorize` returns Google's URL plus a signed `state` JWT and the verifier, the SPA keeps them in sessionStorage, Google redirects to the SPA route `/auth/google/callback`, which posts the code to `google_login` or `google_link`. Accounts match on `users.google_sub` only, never by email; Google-only users have `hashed_password = NULL`. A bootstrap admin is created on startup from `BOOTSTRAP_ADMIN_*`.
 
@@ -63,7 +67,7 @@ npm test             # vitest
 
 ## Gotchas
 
-- **Tests** run the real app on SQLite with `NullPool` (`DB_NULL_POOL`). They never touch Redis or a real platform: the `queued` fixture captures `dispatch.enqueue_backfill`, and `fake_platform` replaces `platforms.get_client` with a `FakeClient`. Worker logic is tested by calling `scan_service` directly.
+- **Tests** run the real app on SQLite with `NullPool` (`DB_NULL_POOL`). They never touch Redis, a browser or a real platform: the `queued` fixture captures `dispatch.enqueue_backfill` (`("backfill@browser", id)` for the browser queue), `fake_platform` replaces `platforms.get_client` with a `FakeClient`, and `tests/test_browser.py` drives browser clients with a `FakeDriver` replaying captured JSON. Worker logic is tested by calling `scan_service` directly.
 - **Celery tasks** run each invocation in a fresh `asyncio.run`; use `db.create_worker_engine()` (NullPool, disposed per run), never the shared engine.
 - SQLite returns naive datetimes; compare through `tracking_service._aware` or keep comparisons in SQL.
 - Relationships use `lazy="raise"` except `Tracking.social_account` (`selectin`): load what you need explicitly in async code.
@@ -73,17 +77,18 @@ npm test             # vitest
 - SQLAlchemy relationship forward refs stay quoted with `TYPE_CHECKING` imports; ruff `UP037` is intentionally ignored.
 - **TypeScript:** import `type FormEvent` / `type ReactNode` from `react`; don't use the `React.*` namespace.
 - **Healthchecks:** the worker reuses the backend image, so any compose that runs it must override the HTTP healthcheck (`celery inspect ping`). Frontend checks must hit `127.0.0.1`, not `localhost`.
-- Run exactly **one** worker (it embeds beat). Scale with `--concurrency`.
+- Run exactly **one** `beat`. Workers (`-Q default`) and browser workers (`-Q browser`) scale freely; browser throughput is bounded by saved logins × pacing.
+- Playwright is only in the `browser` image (`pip install ".[browser]"`); import it lazily (see `driver.py`). Locally, point `TABULA_CHROMIUM_PATH` at a Chromium binary if `playwright install` isn't possible.
 
 ## CI, releases & conventions
 
-`.github/workflows/ci.yml`: backend (ruff, pytest on SQLite, `docs/` drift check), backend-postgres (migrations + `alembic check` + pytest on Postgres), frontend (build + vitest), smoke (base compose boots the whole stack; checks health, the nginx proxy, `/openapi.json`, that `/api/trackings` needs auth, and that the worker answers a ping), chart-lint. **Only on push to `main`:** `version` computes the next semver (seeded at `v1.0.0`) and creates a GitHub release; `api-spec` attaches the versioned OpenAPI spec; `images` builds both images tagged `latest`/`X.Y.Z`/`X.Y`/`sha-<short>`, signs them with cosign and attests provenance; `chart` publishes the Helm chart.
+`.github/workflows/ci.yml`: backend (ruff, pytest on SQLite, `docs/` drift check), backend-postgres (migrations + `alembic check` + pytest on Postgres), frontend (build + vitest), smoke (base compose boots the whole stack; checks health, the nginx proxy, `/openapi.json`, that `/api/trackings` needs auth, that both workers answer a ping, that the browser worker can start Chromium, and that beat runs), chart-lint. **Only on push to `main`:** `version` computes the next semver (seeded at `v1.0.0`) and creates a GitHub release; `api-spec` attaches the versioned OpenAPI spec; `images` builds the backend, browser and frontend images tagged `latest`/`X.Y.Z`/`X.Y`/`sha-<short>`, signs them with cosign and attests provenance; `chart` publishes the Helm chart.
 
 The repo is **squash-merge only**, with the squash commit title = PR title. The PR title must be a Conventional Commit (enforced by `.github/workflows/pr-title.yml`): `feat:` → minor, `fix:`/other types → patch, `!` or a `BREAKING CHANGE` footer → major. See `CONTRIBUTING.md`.
 
 ## Deployments
 
 - `docker-compose.yml` (+ dev override) — local/dev; builds images from source.
-- `deploy/truenas/` — TrueNAS SCALE compose using the published GHCR images; only the frontend port (default 30082) is published.
-- `charts/tabula/` — Helm chart, published by CI to `oci://ghcr.io/zollo/charts/tabula`. The backend runs `alembic upgrade head` in an init container and scales horizontally; the worker stays at 1 replica.
+- `deploy/truenas/` — TrueNAS SCALE compose using the published GHCR images (backend, browser, frontend); only the frontend port (default 30082) is published.
+- `charts/tabula/` — Helm chart, published by CI to `oci://ghcr.io/zollo/charts/tabula`. The backend runs `alembic upgrade head` in an init container and scales horizontally; so do the workers (`worker.replicas`, `browserWorker.replicas` or `browserWorker.keda`). `beat` stays at 1 replica.
 - Project docs also live in Notion (Joe's preference); keep this file and the README as the in-repo reference.

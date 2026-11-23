@@ -101,6 +101,31 @@ export interface SystemSettings {
   backfill_max_posts: number;
   credentials: Record<string, CredentialSource>;
   credential_values: Record<string, string>;
+  platform_sources: Record<Platform, CollectionSource>;
+  browser_platforms: Platform[];
+  browser_page_interval_seconds: number;
+  browser_daily_page_cap: number;
+}
+
+// Where a platform's posts come from.
+export type CollectionSource = "api" | "browser";
+
+export type BrowserSessionStatus = "active" | "cooling_down" | "needs_attention" | "disabled";
+
+// A saved browser login used for browser collection (the login itself never leaves the API).
+export interface BrowserSession {
+  id: string;
+  platform: Platform;
+  label: string;
+  signed_in: boolean;
+  status: BrowserSessionStatus;
+  last_error: string | null;
+  cooldown_until: string | null;
+  in_use: boolean;
+  last_used_at: string | null;
+  pages_today: number;
+  pages_total: number;
+  created_at: string;
 }
 
 export interface BuildInfo {

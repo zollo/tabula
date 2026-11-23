@@ -29,6 +29,20 @@ def get_client(platform: Platform, creds: dict[str, str]) -> PlatformClient:
     raise PlatformNotConfigured(f"Unsupported platform {platform}")
 
 
+def get_browser_client(platform: Platform, broker):
+    """A browser client for `platform`, leasing logins from `broker`.
+
+    Built in the browser worker only (it needs Playwright and Chromium).
+    """
+    from app.platforms.browser import RedditBrowserClient, XBrowserClient
+
+    if platform == Platform.x:
+        return XBrowserClient(broker)
+    if platform == Platform.reddit:
+        return RedditBrowserClient(broker)
+    raise PlatformNotConfigured(f"{platform} can't be collected with a browser")
+
+
 __all__ = [
     "FetchedPost",
     "Page",
@@ -37,5 +51,6 @@ __all__ = [
     "PlatformNotConfigured",
     "ProfileInfo",
     "ProfileNotFound",
+    "get_browser_client",
     "get_client",
 ]

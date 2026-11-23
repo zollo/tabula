@@ -1,0 +1,9 @@
+{{- /* The scheduler (Celery beat): always exactly one replica. */ -}}
+{{- include "tabula.celeryDeployment" (dict
+      "root" $
+      "name" "beat"
+      "cfg" .Values.beat
+      "image" (include "tabula.backendImage" .)
+      "replicas" 1
+      "args" (list "celery" "-A" "app.workers.celery_app.celery_app" "beat"
+                   "--schedule=/tmp/celerybeat-schedule" "--loglevel=info")) }}
