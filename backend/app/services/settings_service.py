@@ -110,6 +110,42 @@ async def platform_ready(db: AsyncSession, row: SystemSettings, platform: Platfo
     return platform_configured(platform, platform_credentials(row))
 
 
+async def _restart_backfills(db: AsyncSession, switched: list[Platform]) -> None:
+    """API and browser cursors don't mix: unfinished backfills on a platform whose
+    source changed start over from the newest post (already stored posts are
+    skipped), and the scheduler queues them on the new source's worker."""
+    from sqlalchemy import update as sql_update
+
+    from app.models.social_account import BackfillStatus, SocialAccount
+
+    await db.execute(
+        sql_update(SocialAccount)
+        .where(
+            SocialAccount.platform.in_(switched),
+            SocialAccount.backfill_status.in_([BackfillStatus.pending, BackfillStatus.running]),
+        )
+        .values(
+            backfill_status=BackfillStatus.pending,
+            backfill_cursor=None,
+            backfill_touched_at=None,
+        )
+        .execution_options(synchronize_session=False)
+    )
+
+
+async def current_source(db: AsyncSession, platform: Platform) -> str:
+    """The platform's source as stored right now (bypassing any loaded row)."""
+    from sqlalchemy import select
+
+    stored = (
+        await db.execute(
+            select(SystemSettings.platform_sources).where(SystemSettings.id == SINGLETON_ID)
+        )
+    ).scalar_one_or_none() or {}
+    source = stored.get(platform.value, "api")
+    return source if platform in BROWSER_PLATFORMS and source in SOURCES else "api"
+
+
 async def update(
     db: AsyncSession, changes: dict, credentials: dict[str, str | None]
 ) -> SystemSettings:
@@ -117,6 +153,7 @@ async def update(
     row = await get(db)
     if "enabled_platforms" in changes and changes["enabled_platforms"] is not None:
         changes["enabled_platforms"] = [Platform(p).value for p in changes["enabled_platforms"]]
+    switched: list[Platform] = []
     if changes.get("platform_sources") is not None:
         sources = dict(row.platform_sources or {})
         for key, value in changes["platform_sources"].items():
@@ -125,6 +162,8 @@ async def update(
                 raise Invalid(f"Unknown source {value!r} (use api or browser)")
             if value == "browser" and platform not in BROWSER_PLATFORMS:
                 raise Invalid(f"{platform.value} can't be collected with a browser")
+            if platform_source(row, platform) != value:
+                switched.append(platform)
             sources[platform.value] = value
         changes["platform_sources"] = sources
     for key, value in changes.items():
@@ -142,6 +181,8 @@ async def update(
             else:
                 saved.pop(key, None)
         row.credentials = saved
+    if switched:
+        await _restart_backfills(db, switched)
     await db.commit()
     await db.refresh(row)
     return row

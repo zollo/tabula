@@ -53,7 +53,8 @@ class SystemSettingsUpdate(BaseModel):
     max_trackings_per_user: int | None = Field(default=None, ge=0, le=100000)
     backfill_max_posts: int | None = Field(default=None, ge=0, le=10_000_000)
     platform_sources: dict[Platform, Source] | None = None
-    browser_page_interval_seconds: int | None = Field(default=None, ge=5, le=3600)
+    # Must stay well under the session lease (scraper_session_service.LEASE_TTL).
+    browser_page_interval_seconds: int | None = Field(default=None, ge=5, le=300)
     # 0 = no daily cap.
     browser_daily_page_cap: int | None = Field(default=None, ge=0, le=100_000)
     # Set a value to save it (encrypted); "" or null clears the saved value so

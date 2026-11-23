@@ -45,6 +45,8 @@ class RedditBrowserClient(BrowserClient):
             lambda d: d.get_json(f"{BASE_URL}/user/{quote(name)}/about.json?raw_json=1")
         )
         body = self._check(captured)
+        if body is not None and body.get("kind") != "t2":
+            raise self.fail("error", "Reddit returned an unexpected profile response")
         profile = profile_from_about(body) if body else None
         if profile is None:
             raise ProfileNotFound(f"Reddit user {name!r} not found or suspended")
@@ -58,4 +60,9 @@ class RedditBrowserClient(BrowserClient):
         body = self._check(captured)
         if body is None:
             raise ProfileNotFound(f"Reddit user {profile.handle!r} is gone or suspended")
+        # Only a real listing may end a backfill; anything else is an error to retry.
+        children = (body.get("data") or {}).get("children") if body.get("kind") == "Listing" \
+            else None
+        if not isinstance(children, list):
+            raise self.fail("error", "Reddit returned an unexpected listing response")
         return page_from_listing(body)

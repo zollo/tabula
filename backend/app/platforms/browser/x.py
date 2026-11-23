@@ -143,6 +143,22 @@ def parse_timeline(bodies: list[Any], profile: ProfileInfo) -> list[FetchedPost]
     return sorted(seen.values(), key=lambda p: int(p.external_id), reverse=True)
 
 
+def timeline_problem(bodies: list[Any]) -> str | None:
+    """Why these SearchTimeline responses can't be trusted, or None if they can.
+
+    A valid response always carries timeline `instructions`, even when the
+    search has no results; GraphQL errors and unknown shapes don't.
+    """
+    if any(True for body in bodies for _ in _walk(body, "instructions")):
+        return None
+    for body in bodies:
+        errors = body.get("errors") if isinstance(body, dict) else None
+        if errors:
+            first = errors[0] if isinstance(errors, list) and errors else {}
+            return f"X returned an error: {first.get('message', 'unknown')}"
+    return "X returned a response Tabula doesn't recognize (the site may have changed)"
+
+
 def search_url(handle: str, max_id: str | None) -> str:
     query = f"from:{handle} include:nativeretweets"
     if max_id:
@@ -182,6 +198,9 @@ class XBrowserClient(BrowserClient):
         return profile
 
     async def fetch_page(self, profile: ProfileInfo, cursor: str | None = None) -> Page:
+        if cursor is not None and not cursor.isdigit():
+            cursor = None  # e.g. an API next_token left over from a source switch
+
         def enough(bodies: list[Any]) -> bool:
             return len(parse_timeline(bodies, profile)) >= PAGE_TARGET
 
@@ -194,6 +213,8 @@ class XBrowserClient(BrowserClient):
             )
         )
         self._check(captured)
+        if problem := timeline_problem(captured.bodies):
+            raise self.fail("error", problem)
         posts = parse_timeline(captured.bodies, profile)
         if not posts:
             return Page(posts=[], next_cursor=None)

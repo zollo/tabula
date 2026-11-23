@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { api, ApiError } from "../../api/client";
 import { formatDateTime, PLATFORM_LABELS } from "../../lib/format";
 import type {
@@ -166,15 +166,7 @@ export default function BrowserCollection({ settings, onSave }: Props) {
                 {s.last_error && <div className="small error-text">{s.last_error}</div>}
               </div>
               <div className="row actions">
-                <label className="btn ghost small">
-                  Replace login
-                  <input
-                    type="file"
-                    accept="application/json,.json"
-                    hidden
-                    onChange={(e) => replace(s, e.target.files?.[0])}
-                  />
-                </label>
+                <ReplaceLogin onFile={(f) => replace(s, f)} />
                 <button
                   type="button"
                   className="btn ghost small"
@@ -246,5 +238,28 @@ export default function BrowserCollection({ settings, onSave }: Props) {
         <button className="btn">Add login</button>
       </form>
     </div>
+  );
+}
+
+/** A real button (keyboard-reachable) that opens a file picker for a new login. */
+function ReplaceLogin({ onFile }: { onFile: (f: File | undefined) => void }) {
+  const input = useRef<HTMLInputElement>(null);
+  return (
+    <>
+      <button type="button" className="btn ghost small" onClick={() => input.current?.click()}>
+        Replace login
+      </button>
+      <input
+        ref={input}
+        type="file"
+        accept="application/json,.json"
+        hidden
+        tabIndex={-1}
+        onChange={(e) => {
+          onFile(e.target.files?.[0]);
+          e.target.value = "";
+        }}
+      />
+    </>
   );
 }

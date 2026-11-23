@@ -24,7 +24,9 @@ class Broker(Protocol):
 
     async def acquire(self) -> dict[str, Any] | None: ...
 
-    async def page_loaded(self) -> None: ...
+    async def start_page(self) -> None:
+        """Called before each page load; raises PlatformError if the login was
+        lost or is out of pages for today."""
 
     async def release(self, outcome: str, error: str | None) -> None: ...
 
@@ -65,6 +67,7 @@ class BrowserClient:
             wait = self._last_load + self.broker.interval_seconds - self._clock()
             if wait > 0:
                 await self._sleep(wait)
+        await self.broker.start_page()
         try:
             captured = await fn(self._driver)
         except PlatformError:
@@ -73,7 +76,6 @@ class BrowserClient:
             raise self.fail("error", f"{self.label} page failed to load: {exc}") from exc
         finally:
             self._last_load = self._clock()
-        await self.broker.page_loaded()
         return captured
 
     def fail(self, outcome: str, message: str) -> PlatformError:

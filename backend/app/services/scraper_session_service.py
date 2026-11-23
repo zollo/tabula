@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import false, or_, select, true, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import Invalid, NotFound
@@ -23,7 +23,9 @@ from app.models.platform import PLATFORM_LABELS, Platform
 from app.models.scraper_session import ScraperSession, SessionStatus
 from app.platforms.base import PlatformError
 
-# A lease outlives a crashed worker by at most this long.
+# A lease outlives a crashed worker by at most this long. It's renewed before
+# every page load, so it must exceed the longest pacing wait plus one page load
+# (schemas.settings caps the wait at 300 seconds).
 LEASE_TTL = timedelta(minutes=10)
 COOLDOWN = timedelta(minutes=15)
 # Signed-in cookie each site sets; a storage state without it isn't a login.
@@ -209,6 +211,9 @@ async def lease(db: AsyncSession, platform: Platform, daily_cap: int) -> Lease:
             continue
         token = uuid.uuid4().hex
         seen = row.lease_token
+        # Re-check eligibility in the UPDATE itself: another worker may have
+        # leased and released it (token back to NULL) with a new cooldown,
+        # pacing delay, page count or status since we read it.
         result = await db.execute(
             update(ScraperSession)
             .where(
@@ -216,6 +221,23 @@ async def lease(db: AsyncSession, platform: Platform, daily_cap: int) -> Lease:
                 ScraperSession.lease_token.is_(None)
                 if seen is None
                 else ScraperSession.lease_token == seen,
+                ScraperSession.status.not_in(BROKEN),
+                or_(ScraperSession.leased_until.is_(None), ScraperSession.leased_until <= now),
+                or_(
+                    ScraperSession.next_allowed_at.is_(None),
+                    ScraperSession.next_allowed_at <= now,
+                ),
+                or_(
+                    ScraperSession.status != SessionStatus.cooling_down,
+                    ScraperSession.cooldown_until.is_(None),
+                    ScraperSession.cooldown_until <= now,
+                ),
+                or_(
+                    true() if not daily_cap else false(),
+                    ScraperSession.pages_day.is_(None),
+                    ScraperSession.pages_day != today,
+                    ScraperSession.pages_today < daily_cap,
+                ),
             )
             .values(
                 lease_token=token,
@@ -237,16 +259,23 @@ async def _owned(db: AsyncSession, lease_: Lease) -> ScraperSession | None:
     return row if row is not None and row.lease_token == lease_.token else None
 
 
-async def record_page(db: AsyncSession, lease_: Lease) -> None:
-    """Count a page load and renew the lease."""
+async def start_page(db: AsyncSession, lease_: Lease, daily_cap: int) -> None:
+    """Before each page load: confirm the lease is still ours, take one page of
+    today's allowance, and renew the lease. Raises (retryable) if the lease was
+    lost or the daily cap is used up, so the caller stops with its cursor kept.
+    """
     row = await _owned(db, lease_)
-    if row is None:
-        return
     now = _now()
+    if row is None:  # another worker took it over after our lease expired
+        raise NoSessionAvailable(f"Lost the lease on browser session {lease_.label!r}")
     today = _today()
     if row.pages_day != today:
         row.pages_day = today
         row.pages_today = 0
+    if daily_cap and row.pages_today >= daily_cap:
+        raise NoSessionAvailable(
+            f"Browser session {lease_.label!r} reached its daily page cap"
+        )
     row.pages_today += 1
     row.pages_total += 1
     row.last_used_at = now
@@ -298,9 +327,9 @@ class Broker:
         self.lease = await lease(self.db, self.platform, self.daily_cap)
         return self.lease.storage_state
 
-    async def page_loaded(self) -> None:
+    async def start_page(self) -> None:
         if self.lease is not None:
-            await record_page(self.db, self.lease)
+            await start_page(self.db, self.lease, self.daily_cap)
 
     async def release(self, outcome: str, error: str | None) -> None:
         if self.lease is not None:

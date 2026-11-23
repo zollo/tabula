@@ -170,9 +170,15 @@ async def backfill(db: AsyncSession, account: SocialAccount, pages: int) -> bool
     client = None
     try:
         client, cfg = await _client(db, account)
+        source = settings_service.platform_source(cfg, account.platform)
         for _ in range(pages):
             page = await client.fetch_page(_profile(account), account.backfill_cursor)
             await store_posts(db, account, page.posts)
+            if await settings_service.current_source(db, account.platform) != source:
+                # The admin switched sources mid-run: this client's cursor means
+                # nothing to the other one, and the backfill was restarted.
+                await db.commit()
+                return False
             account.backfill_cursor = page.next_cursor
             limit = cfg.backfill_max_posts
             if not page.next_cursor or not page.posts or (limit and account.post_count >= limit):

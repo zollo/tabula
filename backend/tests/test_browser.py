@@ -89,7 +89,7 @@ class FakeBroker:
     async def acquire(self):
         return self.state
 
-    async def page_loaded(self):
+    async def start_page(self):
         self.pages += 1
 
     async def release(self, outcome, error):
@@ -188,6 +188,10 @@ def test_x_client_pages_back_with_max_id_and_paces():
         (Captured("https://x.com/i/flow/login", 200, [], []), "challenged"),
         (Captured("https://x.com/search", 200, [], [429]), "rate_limited"),
         (Captured("https://x.com/search", 200, [], []), "error"),
+        (Captured("https://x.com/search", 200, [{"errors": [{"message": "Bad"}]}], [200]),
+         "error"),
+        (Captured("https://x.com/search", 200, [{"data": {"something": "new"}}], [200]),
+         "error"),
     ],
 )
 def test_x_client_reports_blocks(captured, outcome):
@@ -204,6 +208,13 @@ def test_x_client_reports_blocks(captured, outcome):
 
     asyncio.run(go())
     assert broker.released[0] == outcome
+
+
+def test_x_ignores_a_foreign_cursor():
+    client, driver, _ = _client(XBrowserClient, [
+        Captured("https://x.com/search", 200, [_timeline(_tweet(300))], [200])])
+    asyncio.run(client.fetch_page(PROFILE, "DAABCgABGc4o"))  # an API next_token
+    assert "max_id" not in driver.urls[0]
 
 
 def test_x_client_resolve():
@@ -227,8 +238,8 @@ def test_x_client_resolve():
 
 
 def test_reddit_client():
-    about = {"data": {"id": "abc", "name": "Bob", "icon_img": "https://i/x.png?s=1"}}
-    listing = {"data": {"after": "t3_z", "children": [{"kind": "t3", "data": {
+    about = {"kind": "t2", "data": {"id": "abc", "name": "Bob", "icon_img": "https://i/x.png?s=1"}}
+    listing = {"kind": "Listing", "data": {"after": "t3_z", "children": [{"kind": "t3", "data": {
         "name": "t3_a", "created_utc": 1_700_000_000, "title": "Hello",
         "permalink": "/r/x/comments/a/"}}]}}
     client, driver, _ = _client(RedditBrowserClient, [
@@ -236,6 +247,8 @@ def test_reddit_client():
         Captured("https://www.reddit.com/user/Bob/overview.json", 200, [listing]),
         Captured("https://www.reddit.com/user/ghost/about.json", 404, [{"error": 404}]),
         Captured("https://www.reddit.com/user/Bob/overview.json", 403, []),
+        # A 200 that isn't a listing must not look like the end of history.
+        Captured("https://www.reddit.com/user/Bob/overview.json", 200, [{"error": "x"}]),
     ])
 
     async def go():
@@ -244,6 +257,8 @@ def test_reddit_client():
         with pytest.raises(ProfileNotFound):
             await client.resolve("ghost")
         with pytest.raises(PlatformError):  # an HTML "blocked" page
+            await client.fetch_page(profile)
+        with pytest.raises(PlatformError, match="unexpected listing"):
             await client.fetch_page(profile)
         await client.aclose()
         return profile, page
@@ -306,7 +321,7 @@ def test_leasing_is_exclusive_paced_and_capped(client):
             await sessions.lease(db, Platform.x, daily_cap=0)
 
         # A released session waits out its pacing interval.
-        await sessions.record_page(db, first)
+        await sessions.start_page(db, first, 0)
         await sessions.release(db, first, interval_seconds=60)
         with pytest.raises(sessions.NoSessionAvailable, match="next free at"):
             await sessions.lease(db, Platform.x, daily_cap=0)
@@ -330,7 +345,7 @@ def test_leasing_is_exclusive_paced_and_capped(client):
         await db.commit()
         capped = await sessions.lease(db, Platform.x, daily_cap=1)
         assert capped.session_id == second.session_id
-        await sessions.record_page(db, capped)
+        await sessions.start_page(db, capped, 0)
         await sessions.release(db, capped)
         row = await db.get(ScraperSession, capped.session_id, populate_existing=True)
         row.next_allowed_at = None
@@ -339,6 +354,73 @@ def test_leasing_is_exclusive_paced_and_capped(client):
             await sessions.lease(db, Platform.x, daily_cap=1)
 
     _db(go)
+
+
+def test_daily_cap_and_lost_leases_stop_a_running_client(client):
+    async def go(db):
+        await sessions.create_session(db, Platform.x, "a", X_STATE)
+        broker = sessions.Broker(db, Platform.x, interval_seconds=5, daily_cap=2)
+        await broker.acquire()
+        await broker.start_page()
+        await broker.start_page()
+        with pytest.raises(sessions.NoSessionAvailable, match="daily page cap"):
+            await broker.start_page()
+        # Someone else holds it now (our lease expired and was taken over).
+        row = await db.get(ScraperSession, broker.lease.session_id, populate_existing=True)
+        row.lease_token = "someone-else"
+        row.pages_today = 0
+        await db.commit()
+        with pytest.raises(sessions.NoSessionAvailable, match="Lost the lease"):
+            await broker.start_page()
+
+    _db(go)
+
+
+def test_lease_rechecks_eligibility_at_claim_time(client):
+    """A row read as free but changed before the claim (here: put in cooldown)
+    isn't claimed."""
+    async def go(db):
+        a = await sessions.create_session(db, Platform.x, "a", X_STATE)
+        real_execute = db.execute
+        hit = []
+
+        async def execute(stmt, *args, **kwargs):
+            if getattr(stmt, "is_update", False) and not hit:
+                hit.append(True)
+                await real_execute(
+                    sessions.update(ScraperSession)
+                    .where(ScraperSession.id == a.id)
+                    .values(status=SessionStatus.cooling_down,
+                            cooldown_until=datetime.now(UTC) + timedelta(minutes=5))
+                )
+            return await real_execute(stmt, *args, **kwargs)
+
+        db.execute = execute
+        with pytest.raises(sessions.NoSessionAvailable):
+            await sessions.lease(db, Platform.x, daily_cap=0)
+
+    _db(go)
+
+
+def test_switching_source_restarts_unfinished_backfills(client, admin):
+    async def go(db):
+        done = SocialAccount(platform=Platform.x, external_id="1", handle="a",
+                             backfill_status="complete")
+        running = SocialAccount(platform=Platform.x, external_id="2", handle="b",
+                                backfill_status="running", backfill_cursor="api-token",
+                                backfill_touched_at=datetime.now(UTC))
+        db.add_all([done, running])
+        await db.commit()
+        return running.id
+
+    running_id = _db(go)
+    client.patch("/api/settings", headers=admin, json={"platform_sources": {"x": "browser"}})
+
+    async def check(db):
+        row = await db.get(SocialAccount, running_id)
+        return row.backfill_status, row.backfill_cursor, row.backfill_touched_at
+
+    assert _db(check) == ("pending", None, None)
 
 
 def test_blocked_sessions_cool_down_or_need_attention(client, admin):
@@ -511,3 +593,24 @@ def test_resolve_in_browser_maps_worker_answers(monkeypatch):
         asyncio.run(dispatch.resolve_in_browser(Platform.x, "a"))
 
 
+
+
+def test_work_on_the_wrong_queue_is_moved(client, admin):
+    """Work queued before an admin switched sources goes to the right worker."""
+    from app.workers import tasks
+
+    client.patch("/api/settings", headers=admin, json={"platform_sources": {"x": "browser"}})
+
+    async def go(db):
+        x = SocialAccount(platform=Platform.x, external_id="1", handle="a")
+        bsky = SocialAccount(platform=Platform.bluesky, external_id="2", handle="b")
+        db.add_all([x, bsky])
+        await db.commit()
+        return (
+            await tasks._wrong_queue(db, x, "default"),
+            await tasks._wrong_queue(db, x, "browser"),
+            await tasks._wrong_queue(db, bsky, "browser"),
+            await tasks._wrong_queue(db, x, None),  # unknown: just run it
+        )
+
+    assert _db(go) == ("browser", None, "default", None)

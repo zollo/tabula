@@ -42,19 +42,33 @@ async def _schedule() -> list[tuple[str, str, str]]:
         await engine.dispose()
 
 
-async def _scan(account_id: str) -> int:
+async def _wrong_queue(db, account: SocialAccount, served: str | None) -> str | None:
+    """The queue this account's work belongs on, if it isn't the one serving it.
+
+    An admin can switch a platform's source while its work is already queued;
+    an API worker has no browser, and a browser worker shouldn't use the API.
+    """
+    cfg = await settings_service.get(db)
+    wanted = queue_for(settings_service.platform_source(cfg, account.platform))
+    return wanted if served and served != wanted else None
+
+
+async def _scan(account_id: str, served: str | None) -> tuple[int, str | None]:
+    """(new posts, queue to move to instead)."""
     engine, session_factory = create_worker_engine()
     try:
         async with session_factory() as db:
             account = await db.get(SocialAccount, uuid.UUID(account_id))
             if account is None:
-                return 0
-            return await scan_service.scan(db, account)
+                return 0, None
+            if moved := await _wrong_queue(db, account, served):
+                return 0, moved
+            return await scan_service.scan(db, account), None
     finally:
         await engine.dispose()
 
 
-async def _backfill(account_id: str) -> tuple[bool, str]:
+async def _backfill(account_id: str, served: str | None) -> tuple[bool, str]:
     """(more to do, queue to continue on)."""
     engine, session_factory = create_worker_engine()
     try:
@@ -62,6 +76,8 @@ async def _backfill(account_id: str) -> tuple[bool, str]:
             account = await db.get(SocialAccount, uuid.UUID(account_id))
             if account is None:
                 return False, ""
+            if moved := await _wrong_queue(db, account, served):
+                return True, moved
             more = await scan_service.backfill(db, account, settings.backfill_pages_per_run)
             cfg = await settings_service.get(db)
             return more, queue_for(settings_service.platform_source(cfg, account.platform))
@@ -103,17 +119,24 @@ def schedule_due_work() -> dict:
     return summary
 
 
-@celery_app.task(name="app.workers.tasks.scan_account")
-def scan_account(account_id: str) -> int:
-    return asyncio.run(_scan(account_id))
+def _served_queue(task) -> str | None:
+    return (task.request.delivery_info or {}).get("routing_key") or None
 
 
-@celery_app.task(name="app.workers.tasks.backfill_account")
-def backfill_account(account_id: str) -> bool:
-    more, queue = asyncio.run(_backfill(account_id))
+@celery_app.task(name="app.workers.tasks.scan_account", bind=True)
+def scan_account(self, account_id: str) -> int:
+    new, moved = asyncio.run(_scan(account_id, _served_queue(self)))
+    if moved:
+        scan_account.apply_async(args=[account_id], queue=moved)
+    return new
+
+
+@celery_app.task(name="app.workers.tasks.backfill_account", bind=True)
+def backfill_account(self, account_id: str) -> bool:
+    more, queue = asyncio.run(_backfill(account_id, _served_queue(self)))
     if more:
         # Chunked so one huge history doesn't hog a worker; resumes from the
-        # cursor (on the browser queue if the admin switched sources meanwhile).
+        # cursor, on the queue for the platform's current source.
         backfill_account.apply_async(args=[account_id], queue=queue)
     return more
 
