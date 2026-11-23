@@ -56,12 +56,17 @@ class Pacer:
         return (row is not None, row[0] if row else None)
 
     async def wait(self) -> None:
-        """Claim the next request slot and sleep until it starts."""
+        """Claim the next request slot and sleep until it starts.
+
+        One deadline covers the whole call, so a slot voided by a hold doesn't
+        restart the `max_wait` budget.
+        """
+        deadline = datetime.now(UTC) + self.max_wait
         for _ in range(_ATTEMPTS):
             exists, seen = await self._seen()
             now = datetime.now(UTC)
             slot = max(now, _aware(seen) or now)
-            if slot - now > self.max_wait:
+            if slot > deadline:
                 await self.db.commit()
                 raise Throttled(f"{self.label} rate limit: waiting until {slot:%H:%M:%S} UTC", slot)
             if not exists:

@@ -144,14 +144,27 @@ async def store_posts(db: AsyncSession, account: SocialAccount, fetched: list[Fe
     return new
 
 
+async def _keepable(db: AsyncSession, account: SocialAccount, source, cursor):
+    """`cursor`, unless the admin switched sources since the scan started (the
+    switch cleared it and scheduled a backfill; don't bring it back)."""
+    if cursor is None or source is None:
+        return None
+    if await settings_service.current_source(db, account.platform) != source:
+        return None
+    return cursor
+
+
 async def scan(db: AsyncSession, account: SocialAccount) -> int:
     """Fetch posts newer than the archive. Returns how many new posts were stored."""
     now = datetime.now(UTC)
     total = 0
     client = None
     retry_at = None
+    cursor = None
+    source = None
     try:
-        client, _ = await _client(db, account)
+        client, cfg = await _client(db, account)
+        source = settings_service.platform_source(cfg, account.platform)
         # A scan our own pacing deferred continues where it stopped.
         cursor = account.scan_cursor
         for _ in range(MAX_SCAN_PAGES):
@@ -167,11 +180,13 @@ async def scan(db: AsyncSession, account: SocialAccount) -> int:
     except platforms.Throttled as exc:
         # Our own pacing is full: not a failure, just come back when it frees up.
         retry_at = exc.retry_at
-        account.scan_cursor = cursor
+        account.scan_cursor = await _keepable(db, account, source, cursor)
         logger.info("Scan of %s/%s deferred: %s", account.platform, account.handle, exc)
     except platforms.PlatformError as exc:
         # Retried on the next scan from the same page; a hard failure starts over.
-        account.scan_cursor = cursor if exc.retryable else None
+        account.scan_cursor = (
+            await _keepable(db, account, source, cursor) if exc.retryable else None
+        )
         account.last_error = str(exc)
         logger.warning("Scan of %s/%s failed: %s", account.platform, account.handle, exc)
     finally:
