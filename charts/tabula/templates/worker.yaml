@@ -1,74 +1,9 @@
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: {{ include "tabula.fullname" . }}-worker
-  labels:
-    {{- include "tabula.labels" . | nindent 4 }}
-    app.kubernetes.io/component: worker
-spec:
-  # One replica only: the worker also runs Celery beat (the scan scheduler),
-  # which would double-fire with more. Scale with worker.concurrency.
-  replicas: 1
-  strategy:
-    type: Recreate
-  selector:
-    matchLabels:
-      {{- include "tabula.selectorLabels" (list . "worker") | nindent 6 }}
-  template:
-    metadata:
-      annotations:
-        {{- include "tabula.configChecksum" . | nindent 8 }}
-        {{- with .Values.worker.podAnnotations }}
-        {{- toYaml . | nindent 8 }}
-        {{- end }}
-      labels:
-        {{- include "tabula.labels" . | nindent 8 }}
-        app.kubernetes.io/component: worker
-    spec:
-      serviceAccountName: {{ include "tabula.fullname" . }}
-      {{- with .Values.imagePullSecrets }}
-      imagePullSecrets:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      securityContext:
-        {{- toYaml .Values.worker.podSecurityContext | nindent 8 }}
-      containers:
-        - name: worker
-          image: {{ include "tabula.backendImage" . | quote }}
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
-          command:
-            - celery
-            - -A
-            - app.workers.celery_app.celery_app
-            - worker
-            - --beat
-            - --schedule=/tmp/celerybeat-schedule
-            - --concurrency={{ .Values.worker.concurrency }}
-            - --loglevel=info
-          envFrom:
-            {{- include "tabula.envFrom" . | nindent 12 }}
-          securityContext:
-            {{- toYaml .Values.worker.securityContext | nindent 12 }}
-          {{- with .Values.worker.livenessProbe }}
-          livenessProbe:
-            {{- toYaml . | nindent 12 }}
-          {{- end }}
-          resources:
-            {{- toYaml .Values.worker.resources | nindent 12 }}
-          volumeMounts:
-            - { name: tmp, mountPath: /tmp }
-      volumes:
-        - name: tmp
-          emptyDir: {}
-      {{- with .Values.worker.nodeSelector }}
-      nodeSelector:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.worker.tolerations }}
-      tolerations:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.worker.affinity }}
-      affinity:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
+{{- /* Scans and backfills through the platform APIs (the `default` queue). */ -}}
+{{- include "tabula.celeryDeployment" (dict
+      "root" $
+      "name" "worker"
+      "cfg" .Values.worker
+      "image" (include "tabula.backendImage" .)
+      "replicas" .Values.worker.replicas
+      "args" (list "celery" "-A" "app.workers.celery_app.celery_app" "worker" "-Q" "default"
+                   (printf "--concurrency=%v" .Values.worker.concurrency) "--loglevel=info")) }}

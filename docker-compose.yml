@@ -62,19 +62,60 @@ services:
         condition: service_started
       redis:
         condition: service_healthy
-    # Celery worker + embedded beat: the scan scheduler, scans and backfills.
-    # Run exactly one (beat must not double-fire).
+    # Scans and backfills through the platform APIs (the `default` queue).
+    # Scale freely: `docker compose up -d --scale worker=3`, or --concurrency.
     command: >
-      celery -A app.workers.celery_app.celery_app worker
-      --beat --schedule=/tmp/celerybeat-schedule --loglevel=info
+      celery -A app.workers.celery_app.celery_app worker -Q default --loglevel=info
     # Override the backend image's HTTP healthcheck (the worker serves no HTTP);
-    # ping the worker over the broker instead.
-    healthcheck:
-      test: ["CMD-SHELL", "celery -A app.workers.celery_app.celery_app inspect ping --timeout 10 >/dev/null 2>&1 || exit 1"]
+    # ping this worker over the broker instead.
+    healthcheck: &worker-health
+      test: ["CMD-SHELL", "celery -A app.workers.celery_app.celery_app inspect ping -d celery@$$HOSTNAME --timeout 10 >/dev/null 2>&1 || exit 1"]
       interval: 30s
       timeout: 15s
       retries: 5
       start_period: 45s
+
+  beat:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      POSTGRES_HOST: postgres
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      backend:
+        condition: service_started
+      redis:
+        condition: service_healthy
+    # The scheduler: queues due scans and backfills every tick. Run exactly ONE.
+    command: >
+      celery -A app.workers.celery_app.celery_app beat
+      --schedule=/tmp/celerybeat-schedule --loglevel=info
+    healthcheck:
+      disable: true
+
+  browser-worker:
+    build:
+      context: ./backend
+      target: browser
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      POSTGRES_HOST: postgres
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      backend:
+        condition: service_started
+      redis:
+        condition: service_healthy
+    # Headless Chromium for X/Reddit browser collection (the `browser` queue).
+    # Each process runs one browser (~300-500 MB). Throughput is limited by the
+    # saved logins and their pacing, so more processes than logins don't help.
+    command: >
+      celery -A app.workers.celery_app.celery_app worker -Q browser
+      --concurrency=${BROWSER_WORKER_CONCURRENCY:-2} --loglevel=info
+    healthcheck: *worker-health
 
   frontend:
     build:

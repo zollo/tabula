@@ -421,6 +421,10 @@ input:focus, select:focus, textarea:focus {
   flex-wrap: wrap;
 }
 .file-row .name { font-weight: 600; overflow-wrap: anywhere; }
+.session-row { flex-wrap: wrap; }
+.session-row .info { flex: 1 1 240px; min-width: 0; }
+.session-row .actions { gap: 6px; flex-wrap: wrap; }
+.error-text { color: var(--danger); overflow-wrap: anywhere; }
 
 code, pre {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;

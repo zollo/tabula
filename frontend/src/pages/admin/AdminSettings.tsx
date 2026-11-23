@@ -2,9 +2,12 @@ import { useEffect, useState, type FormEvent } from "react";
 import { api, ApiError } from "../../api/client";
 import { formatInterval, PLATFORM_LABELS } from "../../lib/format";
 import type { CredentialSource, Platform, SystemSettings } from "../../types";
+import BrowserCollection from "./BrowserCollection";
 
 // PATCH body: credentials are new values (or null to clear), unlike the read shape.
-type SettingsUpdate = Partial<Omit<SystemSettings, "credentials" | "credential_values">> & {
+type SettingsUpdate = Partial<
+  Omit<SystemSettings, "credentials" | "credential_values" | "browser_platforms">
+> & {
   credentials?: Record<string, string | null>;
 };
 
@@ -217,6 +220,8 @@ export default function AdminSettings() {
         ))}
         <button className="btn">Save connections</button>
       </form>
+
+      <BrowserCollection settings={settings} onSave={save} />
     </div>
   );
 }

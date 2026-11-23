@@ -28,6 +28,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Browser collection (X, Reddit): installed in the browser-worker image only.
+browser = [
+    "playwright==1.63.0",
+]
 dev = [
     "pytest==9.1.1",
     "pytest-asyncio==1.4.0",

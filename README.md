@@ -59,15 +59,19 @@ environment one.
                             FastAPI (backend image) ──► Postgres
                                   │ queue                ▲  (users, settings,
                                   ▼                      │   accounts, posts)
-                               Redis ──► Celery worker ──┘
-                                         + beat scheduler ──► X / Bluesky / Reddit APIs
+       Celery beat ──► Redis ──┬──► worker ──────────────┤──► X / Bluesky / Reddit APIs
+                               └──► browser worker ──────┘──► x.com / reddit.com (Chromium)
 ```
 
 - **backend** — FastAPI, SQLAlchemy 2 (async), Alembic. Stateless; scales
   horizontally.
-- **worker** — the same image running Celery with an embedded beat scheduler.
-  Every minute it queues accounts due for a scan and any unfinished backfill.
-  Run exactly one.
+- **beat** — the scheduler. Every minute it queues accounts due for a scan and
+  any unfinished backfill. Run exactly one.
+- **worker** — the backend image running Celery for API-based collection (the
+  `default` queue). Scale freely.
+- **browser-worker** — the `tabula-browser` image (backend + Playwright +
+  Chromium) for platforms an admin switched to browser collection (the `browser`
+  queue). See [Browser collection](#browser-collection).
 - **Redis** — the Celery broker only. Nothing durable: due work is rediscovered
   from Postgres, so Redis can restart or lose its data freely.
 - **frontend** — React + Vite + TypeScript served by nginx, which proxies the
@@ -84,6 +88,32 @@ Open http://localhost:8080 and sign in as `admin@example.com` /
 `change-me-please` (from `.env`). Bluesky works with no setup; add X or Reddit
 credentials under **Settings**. The API is on http://localhost:8000 (`/docs`).
 
+## Browser collection
+
+X and Reddit can be collected with a headless browser instead of their APIs
+(**Settings → Browser collection**, per platform). On X this needs no paid API
+and reaches further back: it walks a "Latest" search for `from:<handle>` with a
+`max_id` cursor instead of the profile timeline's ~3,200-post limit. On Reddit
+it reaches the same ~1,000 items as the API.
+
+- **Saved logins.** Run `python backend/app/tools/capture_session.py x
+  x-session.json` on your own computer (needs `pip install playwright` and
+  `playwright install chromium`), sign in, and upload the file under Settings.
+  X needs a signed-in login; Reddit also works signed out. Logins are stored
+  Fernet-encrypted and never returned by the API.
+- **Pacing.** Each browser task leases one login (never shared by two browsers),
+  waits *Seconds between pages* between page loads, and stops at *Pages per login
+  per day*. A rate limit cools the login down for 15 minutes; a login wall or
+  challenge parks it as *Needs a new login*. Tabula doesn't try to get around
+  either.
+- **Scaling.** Throughput ≈ logins × pages per login. Add logins, then add
+  browser-worker processes (`BROWSER_WORKER_CONCURRENCY`, more replicas, or KEDA
+  on the `browser` queue in the Helm chart) to match.
+- **Fragility and terms.** It reads the JSON the sites' own web apps load, which
+  changes without notice: when it does, scans report "didn't return any data"
+  until the parser is updated. Automated access is against X's and Reddit's
+  terms, and accounts used this way may be locked or suspended.
+
 ## Local development without Docker
 
 ```bash
@@ -93,7 +123,10 @@ pip install ".[dev]"
 export POSTGRES_HOST=localhost REDIS_URL=redis://localhost:6379/0
 alembic upgrade head
 uvicorn app.main:app --reload                                      # http://localhost:8000
-celery -A app.workers.celery_app.celery_app worker --beat -l info  # scans and backfills
+celery -A app.workers.celery_app.celery_app beat -l info            # the scheduler
+celery -A app.workers.celery_app.celery_app worker -Q default -l info  # scans and backfills
+# Browser collection only: pip install ".[browser]" && playwright install chromium
+celery -A app.workers.celery_app.celery_app worker -Q browser -l info
 
 cd ../frontend
 npm install

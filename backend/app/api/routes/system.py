@@ -33,6 +33,10 @@ def _read(row: SystemSettings) -> SystemSettingsRead:
         credential_values={
             k: creds[k] for k, secret in settings_service.CREDENTIAL_FIELDS.items() if not secret
         },
+        platform_sources={p: settings_service.platform_source(row, p) for p in Platform},
+        browser_platforms=list(settings_service.BROWSER_PLATFORMS),
+        browser_page_interval_seconds=row.browser_page_interval_seconds,
+        browser_daily_page_cap=row.browser_daily_page_cap,
     )
 
 
@@ -62,14 +66,13 @@ async def get_tracking_options(
 ) -> TrackingOptions:
     """Platforms users may track and the scan-frequency limits."""
     row = await settings_service.get(db)
-    creds = settings_service.platform_credentials(row)
     return TrackingOptions(
         platforms=[
             PlatformOption(
                 value=p,
                 label=PLATFORM_LABELS[p],
                 enabled=p.value in row.enabled_platforms,
-                configured=settings_service.platform_configured(p, creds),
+                configured=await settings_service.platform_ready(db, row, p),
             )
             for p in Platform
         ],

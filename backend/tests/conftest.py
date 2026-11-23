@@ -142,5 +142,9 @@ def fake_platform(monkeypatch):
 def queued(monkeypatch) -> list[tuple[str, str]]:
     """Captures work the API queues for the worker instead of sending it to Redis."""
     sent: list[tuple[str, str]] = []
-    monkeypatch.setattr(dispatch, "enqueue_backfill", lambda i: sent.append(("backfill", str(i))))
+    def enqueue_backfill(account_id, queue=dispatch.DEFAULT_QUEUE):
+        kind = "backfill" if queue == dispatch.DEFAULT_QUEUE else f"backfill@{queue}"
+        sent.append((kind, str(account_id)))
+
+    monkeypatch.setattr(dispatch, "enqueue_backfill", enqueue_backfill)
     return sent

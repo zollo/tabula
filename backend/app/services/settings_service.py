@@ -40,6 +40,9 @@ async def get(db: AsyncSession) -> SystemSettings:
             max_trackings_per_user=25,
             backfill_max_posts=5000,
             credentials={},
+            platform_sources={},
+            browser_page_interval_seconds=20,
+            browser_daily_page_cap=400,
         )
         db.add(row)
         await db.commit()
@@ -78,12 +81,69 @@ def credential_sources(row: SystemSettings) -> dict[str, str]:
     return out
 
 
+# Platforms whose posts can be collected with a browser instead of the API.
+BROWSER_PLATFORMS = (Platform.x, Platform.reddit)
+SOURCES = ("api", "browser")
+
+
+def platform_source(row: SystemSettings, platform: Platform) -> str:
+    """'api' or 'browser': where this platform's posts come from."""
+    source = (row.platform_sources or {}).get(platform.value, "api")
+    return source if platform in BROWSER_PLATFORMS and source in SOURCES else "api"
+
+
 def platform_configured(platform: Platform, creds: dict[str, str]) -> bool:
+    """API credentials are in place (see platform_ready for the browser source)."""
     if platform == Platform.x:
         return bool(creds["x_bearer_token"])
     if platform == Platform.reddit:
         return bool(creds["reddit_client_id"] and creds["reddit_client_secret"])
     return bool(creds["bluesky_appview_url"])
+
+
+async def platform_ready(db: AsyncSession, row: SystemSettings, platform: Platform) -> bool:
+    """Whether adding and scanning accounts on this platform can work right now."""
+    if platform_source(row, platform) == "browser":
+        from app.services import scraper_session_service
+
+        return await scraper_session_service.has_usable_session(db, platform)
+    return platform_configured(platform, platform_credentials(row))
+
+
+async def _restart_backfills(db: AsyncSession, switched: list[Platform]) -> None:
+    """API and browser cursors don't mix: unfinished backfills on a platform whose
+    source changed start over from the newest post (already stored posts are
+    skipped), and the scheduler queues them on the new source's worker."""
+    from sqlalchemy import update as sql_update
+
+    from app.models.social_account import BackfillStatus, SocialAccount
+
+    await db.execute(
+        sql_update(SocialAccount)
+        .where(
+            SocialAccount.platform.in_(switched),
+            SocialAccount.backfill_status.in_([BackfillStatus.pending, BackfillStatus.running]),
+        )
+        .values(
+            backfill_status=BackfillStatus.pending,
+            backfill_cursor=None,
+            backfill_touched_at=None,
+        )
+        .execution_options(synchronize_session=False)
+    )
+
+
+async def current_source(db: AsyncSession, platform: Platform) -> str:
+    """The platform's source as stored right now (bypassing any loaded row)."""
+    from sqlalchemy import select
+
+    stored = (
+        await db.execute(
+            select(SystemSettings.platform_sources).where(SystemSettings.id == SINGLETON_ID)
+        )
+    ).scalar_one_or_none() or {}
+    source = stored.get(platform.value, "api")
+    return source if platform in BROWSER_PLATFORMS and source in SOURCES else "api"
 
 
 async def update(
@@ -93,6 +153,19 @@ async def update(
     row = await get(db)
     if "enabled_platforms" in changes and changes["enabled_platforms"] is not None:
         changes["enabled_platforms"] = [Platform(p).value for p in changes["enabled_platforms"]]
+    switched: list[Platform] = []
+    if changes.get("platform_sources") is not None:
+        sources = dict(row.platform_sources or {})
+        for key, value in changes["platform_sources"].items():
+            platform = Platform(key.value if isinstance(key, Platform) else key)
+            if value not in SOURCES:
+                raise Invalid(f"Unknown source {value!r} (use api or browser)")
+            if value == "browser" and platform not in BROWSER_PLATFORMS:
+                raise Invalid(f"{platform.value} can't be collected with a browser")
+            if platform_source(row, platform) != value:
+                switched.append(platform)
+            sources[platform.value] = value
+        changes["platform_sources"] = sources
     for key, value in changes.items():
         if value is not None:
             setattr(row, key, value)
@@ -108,6 +181,8 @@ async def update(
             else:
                 saved.pop(key, None)
         row.credentials = saved
+    if switched:
+        await _restart_backfills(db, switched)
     await db.commit()
     await db.refresh(row)
     return row

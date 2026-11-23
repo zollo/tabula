@@ -6,9 +6,11 @@ fullnameOverride: ""
 image:
   # -- Backend image: serves the REST API, runs the scan worker and migrations.
   backend: ghcr.io/zollo/tabula-backend
+  # -- Browser-worker image: the backend plus Playwright and Chromium.
+  browser: ghcr.io/zollo/tabula-browser
   # -- Frontend image: the React SPA served by nginx.
   frontend: ghcr.io/zollo/tabula-frontend
-  # -- Tag for both images. Defaults to the chart appVersion (the release a
+  # -- Tag for all images. Defaults to the chart appVersion (the release a
   # published chart was cut from), or "latest" from a source checkout.
   tag: ""
   pullPolicy: IfNotPresent
@@ -99,7 +101,8 @@ backend:
   topologySpreadConstraints: []
 
 worker:
-  # Always one replica: it also runs Celery beat, which must not double-fire.
+  # -- Scan workers (API-based platforms). Scale freely; the scheduler runs in `beat`.
+  replicas: 1
   podAnnotations: {}
   # -- Celery worker concurrency (processes): scans and backfills run in parallel.
   concurrency: 4
@@ -128,6 +131,78 @@ worker:
     periodSeconds: 120
     timeoutSeconds: 30
     failureThreshold: 3
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# The scheduler (Celery beat). Always one replica: it must not double-fire.
+beat:
+  podAnnotations: {}
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: [ALL]
+  resources:
+    requests:
+      cpu: 10m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
+  livenessProbe: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# Headless Chromium for X/Reddit browser collection, used for platforms whose
+# source is "browser" in Settings. Throughput is bounded by the saved logins and
+# their pacing, so size replicas x concurrency to roughly the number of logins.
+browserWorker:
+  enabled: true
+  replicas: 1
+  # -- Chromium processes per pod (~300-500 MB each).
+  concurrency: 2
+  podAnnotations: {}
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: [ALL]
+  resources:
+    requests:
+      cpu: 250m
+      memory: 768Mi
+    limits:
+      memory: 2Gi
+  livenessProbe:
+    exec:
+      command: ["sh", "-c", "celery -A app.workers.celery_app.celery_app inspect ping -d celery@$HOSTNAME --timeout 15"]
+    initialDelaySeconds: 90
+    periodSeconds: 120
+    timeoutSeconds: 30
+    failureThreshold: 3
+  # -- Autoscale on the `browser` queue length with KEDA (must be installed).
+  keda:
+    enabled: false
+    minReplicas: 0
+    maxReplicas: 5
+    queueLengthPerReplica: 5
+    # Defaults to the bundled Redis; set host:port for an external one.
+    redisAddress: ""
   nodeSelector: {}
   tolerations: []
   affinity: {}
