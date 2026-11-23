@@ -15,8 +15,9 @@ from app.models.platform import Platform
 from app.models.request_pacer import RequestPacer
 from app.models.social_account import SocialAccount
 from app.platforms import PlatformError, ProfileInfo, ProfileNotFound, Throttled
+from app.platforms.reddit import page_from_listing
 from app.platforms.reddit_public import RedditPublicClient
-from app.services import scan_service
+from app.services import scan_service, settings_service
 from app.services.pacer_service import Pacer
 
 ABOUT = {"kind": "t2", "data": {"id": "abc", "name": "Bob", "icon_img": "https://i/x.png?s=1"}}
@@ -298,3 +299,137 @@ def test_switching_to_public_restarts_backfills(client, admin):
         return row.backfill_status, row.backfill_cursor
 
     assert _db(check) == ("pending", None)
+
+
+def test_a_hold_voids_slots_reserved_before_it(client):
+    async def go(db):
+        async with AsyncSessionLocal() as other_db:
+            other = Pacer(other_db, "reddit-public", 10)
+
+            async def sleep(_):
+                # While this worker waits for its slot, another one gets a 429.
+                await other.hold(300)
+
+            pacer = Pacer(db, "reddit-public", 10, sleep=sleep)
+            await pacer.wait()  # first slot is now: no sleep, sends
+            with pytest.raises(Throttled) as exc:
+                await pacer.wait()  # reserved 10 s out, then the hold landed
+            return exc.value.retry_at
+
+    retry_at = _db(go)
+    assert retry_at > datetime.now(UTC) + timedelta(seconds=250)
+
+
+def test_a_deferred_scan_resumes_where_it_stopped(client, admin, public_reddit):
+    client.patch("/api/settings", headers=admin, json={"platform_sources": {"reddit": "public"}})
+
+    async def go(db):
+        account = SocialAccount(platform=Platform.reddit, external_id="t2_a", handle="bob",
+                                scan_interval_minutes=None, backfill_status="complete")
+        db.add(account)
+        await db.commit()
+        # Archived before: the scan's boundary.
+        await scan_service.store_posts(db, account, page_from_listing(_listing("t3_a")).posts)
+        await db.commit()
+        public_reddit.responses += [_json(_listing("t3_d", "t3_c", after="t3_c"))]
+        real_wait = Pacer.wait
+        calls = 0
+
+        async def wait(self):
+            nonlocal calls
+            calls += 1
+            if calls == 2:  # the second page has to wait too long
+                raise Throttled("busy", datetime.now(UTC) + timedelta(minutes=2))
+            await real_wait(self)
+
+        Pacer.wait = wait
+        try:
+            await scan_service.scan(db, account)
+        finally:
+            Pacer.wait = real_wait
+        deferred = (account.scan_cursor, account.next_scan_at is not None, account.post_count)
+        # Next time: the older page, which reaches a known post and ends the scan.
+        public_reddit.responses += [_json(_listing("t3_b", "t3_a", after="t3_a"))]
+        await scan_service.scan(db, account)
+        return deferred, account.scan_cursor, account.post_count
+
+    deferred, cursor, count = _db(go)
+    # Paused (no interval), yet the deferred "scan now" is rescheduled.
+    assert deferred == ("t3_c", True, 3)
+    assert cursor is None and count == 4
+    assert public_reddit.requests[-1].url.params["after"] == "t3_c"
+
+
+def test_one_wait_budget_covers_voided_slots(client):
+    async def go(db):
+        async with AsyncSessionLocal() as other_db:
+            other = Pacer(other_db, "reddit-public", 10)
+            await other.wait()  # someone sent just now: our slot is 10 s out
+
+            async def sleep(_):
+                await other.hold(15)  # a hold lands while we wait for it
+
+            pacer = Pacer(db, "reddit-public", 10, sleep=sleep, max_wait=timedelta(seconds=20))
+            # The replacement slot (15 s) fits max_wait alone, but not on top
+            # of the 10 s already spent.
+            with pytest.raises(Throttled):
+                await pacer.wait()
+
+    _db(go)
+
+
+def test_switching_sources_mid_scan_repairs_instead_of_resuming(client, admin, public_reddit):
+    client.patch("/api/settings", headers=admin, json={"platform_sources": {"reddit": "public"}})
+
+    async def go(db):
+        account = SocialAccount(platform=Platform.reddit, external_id="t2_a", handle="bob",
+                                scan_interval_minutes=60, backfill_status="complete",
+                                scan_cursor="t3_old")
+        db.add(account)
+        await db.commit()
+        return account.id
+
+    account_id = _db(go)
+    # The admin switches back to the API while that deferred scan is pending.
+    client.patch("/api/settings", headers=admin, json={"platform_sources": {"reddit": "api"}})
+
+    async def check(db):
+        row = await db.get(SocialAccount, account_id)
+        return row.scan_cursor, row.backfill_status, row.backfill_cursor
+
+    # The cursor is dropped, and a fresh backfill fills whatever it would have.
+    assert _db(check) == (None, "pending", None)
+
+
+def test_a_scan_does_not_restore_a_cursor_a_switch_cleared(client, admin, public_reddit):
+    client.patch("/api/settings", headers=admin, json={"platform_sources": {"reddit": "public"}})
+
+    async def go(db):
+        account = SocialAccount(platform=Platform.reddit, external_id="t2_a", handle="bob",
+                                scan_interval_minutes=60, backfill_status="complete")
+        db.add(account)
+        await db.commit()
+        public_reddit.responses += [_json(_listing("t3_d", "t3_c", after="t3_c"))]
+        real_wait = Pacer.wait
+        calls = 0
+
+        async def wait(self):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                # The admin switches sources while the scan runs, then it's throttled.
+                cfg = await settings_service.update(
+                    db, {"platform_sources": {"reddit": "api"}}, {}
+                )
+                assert cfg.platform_sources["reddit"] == "api"
+                raise Throttled("busy", datetime.now(UTC) + timedelta(minutes=2))
+            await real_wait(self)
+
+        Pacer.wait = wait
+        try:
+            await scan_service.scan(db, account)
+        finally:
+            Pacer.wait = real_wait
+        return account.scan_cursor
+
+    assert _db(go) is None

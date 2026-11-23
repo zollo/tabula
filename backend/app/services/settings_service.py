@@ -148,6 +148,20 @@ async def _restart_backfills(db: AsyncSession, switched: list[Platform]) -> None
         )
         .execution_options(synchronize_session=False)
     )
+    # A deferred scan's cursor belongs to the old source too. Dropping it could
+    # leave a gap between that scan's pages and the archive, so those accounts
+    # get a fresh backfill, which walks past stored posts and fills it.
+    await db.execute(
+        sql_update(SocialAccount)
+        .where(SocialAccount.platform.in_(switched), SocialAccount.scan_cursor.is_not(None))
+        .values(
+            scan_cursor=None,
+            backfill_status=BackfillStatus.pending,
+            backfill_cursor=None,
+            backfill_touched_at=None,
+        )
+        .execution_options(synchronize_session=False)
+    )
 
 
 async def current_source(db: AsyncSession, platform: Platform) -> str:

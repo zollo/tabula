@@ -56,12 +56,17 @@ class Pacer:
         return (row is not None, row[0] if row else None)
 
     async def wait(self) -> None:
-        """Claim the next request slot and sleep until it starts."""
+        """Claim the next request slot and sleep until it starts.
+
+        One deadline covers the whole call, so a slot voided by a hold doesn't
+        restart the `max_wait` budget.
+        """
+        deadline = datetime.now(UTC) + self.max_wait
         for _ in range(_ATTEMPTS):
             exists, seen = await self._seen()
             now = datetime.now(UTC)
             slot = max(now, _aware(seen) or now)
-            if slot - now > self.max_wait:
+            if slot > deadline:
                 await self.db.commit()
                 raise Throttled(f"{self.label} rate limit: waiting until {slot:%H:%M:%S} UTC", slot)
             if not exists:
@@ -88,7 +93,15 @@ class Pacer:
                 delay = (slot - datetime.now(UTC)).total_seconds()
                 if delay > 0:
                     await self._sleep(delay)
-                return
+                # Another worker may have been told to back off while we slept:
+                # then this slot is void and we queue again behind the hold.
+                hold = (
+                    await self.db.execute(
+                        select(RequestPacer.hold_until).where(RequestPacer.key == self.key)
+                    )
+                ).scalar_one_or_none()
+                if hold is None or _aware(hold) <= datetime.now(UTC):
+                    return
         raise PlatformError(f"{self.label}: too many workers waiting to send", retryable=True)
 
     async def hold(self, seconds: float) -> datetime:
@@ -98,17 +111,15 @@ class Pacer:
         if not exists:
             try:
                 async with self.db.begin_nested():
-                    self.db.add(RequestPacer(key=self.key, next_at=until))
+                    self.db.add(RequestPacer(key=self.key, next_at=until, hold_until=until))
             except IntegrityError:
                 exists = True
         if exists:
-            await self.db.execute(
-                update(RequestPacer)
-                .where(
-                    RequestPacer.key == self.key,
-                    RequestPacer.next_at.is_(None) | (RequestPacer.next_at < until),
+            for column in (RequestPacer.next_at, RequestPacer.hold_until):
+                await self.db.execute(
+                    update(RequestPacer)
+                    .where(RequestPacer.key == self.key, column.is_(None) | (column < until))
+                    .values({column.key: until})
                 )
-                .values(next_at=until)
-            )
         await self.db.commit()
         return until
