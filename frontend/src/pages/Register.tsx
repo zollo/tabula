@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api, ApiError } from "../api/client";
 import GoogleButton from "../components/GoogleButton";
+import Logo from "../components/Logo";
 import { useAuth } from "../context/AuthContext";
 import type { AuthConfig } from "../types";
 
@@ -37,11 +38,11 @@ export default function Register() {
   };
 
   return (
-    <div className="center-screen">
+    <div className="center-screen brand-backdrop">
       <div className="card" style={{ width: "100%", maxWidth: 400 }}>
         <div className="brand" style={{ marginBottom: 8 }}>
-          <img src="/favicon.svg" alt="" />
-          Tabula
+          <Logo size={36} />
+          <span className="wordmark">Tabula</span>
         </div>
         <p className="subtitle">Create your account. An admin enables tracking for new accounts.</p>
         {error && <div className="alert error">{error}</div>}

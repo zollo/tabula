@@ -1,5 +1,6 @@
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
+import Logo from "./Logo";
 import ThemeToggle from "./ThemeToggle";
 
 interface Tab {
@@ -38,7 +39,7 @@ export default function Layout() {
     <>
       <nav className="app-nav">
         <NavLink to="/" className="brand">
-          <img src="/favicon.svg" alt="" />
+          <Logo />
           Tabula
         </NavLink>
         <div className="links">
