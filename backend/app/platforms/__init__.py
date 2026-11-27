@@ -54,6 +54,16 @@ def get_public_client(platform: Platform, pacer, user_agent: str) -> PlatformCli
     raise PlatformNotConfigured(f"{platform} can't be collected without a login")
 
 
+def get_archive_client(platform: Platform, pacer, user_agent: str) -> PlatformClient:
+    """A client reading `platform` from a third-party archive (Arctic Shift for
+    Reddit): no login or credentials, paced by `pacer`, which every worker shares."""
+    if platform == Platform.reddit:
+        from app.platforms.reddit_archive import RedditArchiveClient
+
+        return RedditArchiveClient(pacer, user_agent)
+    raise PlatformNotConfigured(f"{platform} can't be collected from an archive")
+
+
 __all__ = [
     "FetchedPost",
     "Page",
@@ -63,6 +73,7 @@ __all__ = [
     "ProfileInfo",
     "ProfileNotFound",
     "Throttled",
+    "get_archive_client",
     "get_browser_client",
     "get_public_client",
     "get_client",

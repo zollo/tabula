@@ -29,8 +29,9 @@ class SystemSettings(TimestampMixin, Base):
     # ({"x_bearer_token": "<token>", ...}). Never returned by the API.
     credentials: Mapped[dict[str, str]] = mapped_column(JSONType, nullable=False, default=dict)
     # Where each platform's posts come from: "api" (default), "browser"
-    # ({"x": "browser"}; X and Reddit only) or "public" (Reddit only: its
-    # public .json pages, no login or credentials).
+    # ({"x": "browser"}; X and Reddit only), "public" (Reddit only: its
+    # public .json pages, no login or credentials) or "archive" (Reddit only:
+    # the Arctic Shift archive).
     platform_sources: Mapped[dict[str, str]] = mapped_column(
         JSONType, nullable=False, default=dict
     )

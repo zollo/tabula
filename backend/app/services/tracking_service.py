@@ -142,7 +142,7 @@ async def add_tracking(
                     )
                 # The API has no browser: the browser worker looks it up.
                 profile = await dispatch.resolve_in_browser(platform, handle)
-            elif source == "public":
+            elif source in ("public", "archive"):
                 # Paced like the workers' requests; a busy pacer reads as "try again".
                 client = await scan_service.client_for(
                     db, platform, cfg, max_wait=timedelta(seconds=20)

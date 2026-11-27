@@ -39,14 +39,28 @@ def _profile(account: SocialAccount) -> ProfileInfo:
 
 
 async def client_for(db: AsyncSession, platform, cfg, *, max_wait: timedelta | None = None):
-    """The API, browser or public client for `platform`, per the admin's source
-    setting.
+    """The API, browser, public or archive client for `platform`, per the admin's
+    source setting.
 
     Browser clients lease a saved login through `db`; close them with `close`.
-    Public clients pace every request through a pacer shared by all workers
-    (it commits `db` while claiming a slot).
+    Public and archive clients pace every request through a pacer shared by all
+    workers (it commits `db` while claiming a slot).
     """
     source = settings_service.platform_source(cfg, platform)
+    if source == "archive":
+        from app.platforms.reddit_archive import REQUEST_INTERVAL_SECONDS
+        from app.services.pacer_service import Pacer
+
+        pacer = Pacer(
+            db,
+            f"{platform.value}-archive",
+            REQUEST_INTERVAL_SECONDS,
+            label=f"{platform.value} archive",
+            **({"max_wait": max_wait} if max_wait is not None else {}),
+        )
+        creds = settings_service.platform_credentials(cfg)
+        user_agent = creds.get(f"{platform.value}_user_agent", "")
+        return platforms.get_archive_client(platform, pacer, user_agent)
     if source == "public":
         from app.services.pacer_service import Pacer
 

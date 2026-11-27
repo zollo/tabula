@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 from app.models.platform import Platform
 
 CredentialSource = Literal["saved", "environment", "unset"]
-Source = Literal["api", "browser", "public"]
+Source = Literal["api", "browser", "public", "archive"]
 
 
 class PlatformOption(BaseModel):
@@ -39,10 +39,12 @@ class SystemSettingsRead(BaseModel):
     # Non-secret credential values in effect (e.g. Reddit user agent).
     credential_values: dict[str, str]
     # Where each platform's posts come from; only X and Reddit offer "browser",
-    # only Reddit offers "public" (no login or credentials).
+    # only Reddit offers "public" (no login or credentials) and "archive"
+    # (the Arctic Shift archive, no Reddit request at all).
     platform_sources: dict[Platform, Source]
     browser_platforms: list[Platform]
     public_platforms: list[Platform]
+    archive_platforms: list[Platform]
     browser_page_interval_seconds: int
     browser_daily_page_cap: int
     public_request_interval_seconds: int
