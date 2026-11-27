@@ -18,6 +18,8 @@
   --chrome-fg: #f5f5f5;
   --chrome-muted: #a3a3a3;
   --radius: 12px;
+  /* Tabula brand, from the logo (deep crimson to bright red) */
+  --brand-gradient: linear-gradient(45deg, #4a0711, #a50d26 55%, #e0213d);
   --shadow: 0 1px 3px rgba(20, 0, 0, 0.08), 0 1px 2px rgba(20, 0, 0, 0.04);
 
   /* Status badges */
@@ -141,7 +143,7 @@ a:hover { text-decoration: underline; }
   color: inherit;
 }
 .brand:hover { text-decoration: none; }
-.brand img { width: 28px; height: 28px; }
+.logo { display: block; flex: none; border-radius: 22%; }
 .app-nav .links { display: none; gap: 4px; }
 .app-nav .links a {
   padding: 8px 12px;
@@ -150,7 +152,7 @@ a:hover { text-decoration: underline; }
   font-weight: 600;
   font-size: 15px;
 }
-.app-nav .links a.active { color: #fff; background: var(--primary); }
+.app-nav .links a.active { color: #fff; background: var(--brand-gradient); }
 .app-nav .links a:hover { text-decoration: none; color: #fff; }
 .app-nav .spacer { flex: 1; }
 .app-nav .user { display: none; color: var(--chrome-muted); font-size: 14px; }
@@ -225,6 +227,23 @@ h3 { font-size: 16px; margin: 0 0 6px; }
   align-items: center;
   justify-content: center;
   padding: 16px;
+}
+/* Sign-in and sign-up: soft glows in the logo's reds. */
+.center-screen.brand-backdrop {
+  background:
+    radial-gradient(60% 45% at 85% 10%, rgba(236, 36, 64, 0.16), transparent 70%),
+    radial-gradient(55% 45% at 10% 95%, rgba(135, 11, 32, 0.18), transparent 70%),
+    var(--bg);
+}
+.wordmark {
+  background: var(--brand-gradient);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+:root[data-theme="dark"] .wordmark { background-image: linear-gradient(45deg, #ff5a69, #ffd1d7); }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .wordmark { background-image: linear-gradient(45deg, #ff5a69, #ffd1d7); }
 }
 .grid { display: grid; gap: 12px; grid-template-columns: 1fr; }
 @media (min-width: 640px) { .grid.two { grid-template-columns: 1fr 1fr; } }
@@ -316,13 +335,16 @@ input:focus, select:focus, textarea:focus {
   font-weight: 600;
   font-family: inherit;
   cursor: pointer;
-  background: var(--primary);
-  color: var(--on-primary);
+  background: var(--brand-gradient);
+  color: #ffffff;
   text-decoration: none;
   white-space: nowrap;
+  box-shadow: 0 1px 2px rgba(135, 11, 32, 0.3);
 }
-.btn:hover { background: var(--primary-hover); text-decoration: none; }
+.btn:hover { filter: brightness(1.15); text-decoration: none; }
 .btn:disabled { opacity: 0.6; cursor: not-allowed; }
+.btn.secondary, .btn.danger, .btn.ghost { box-shadow: none; }
+.btn.secondary:hover, .btn.danger:hover, .btn.ghost:hover { filter: none; }
 .btn.secondary { background: var(--surface); color: var(--text); border-color: var(--border); }
 .btn.secondary:hover { background: var(--hover); }
 .btn.danger { background: transparent; color: var(--danger); border-color: var(--danger); }
