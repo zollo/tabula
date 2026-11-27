@@ -36,6 +36,7 @@ def _read(row: SystemSettings) -> SystemSettingsRead:
         platform_sources={p: settings_service.platform_source(row, p) for p in Platform},
         browser_platforms=list(settings_service.BROWSER_PLATFORMS),
         public_platforms=list(settings_service.PUBLIC_PLATFORMS),
+        archive_platforms=list(settings_service.ARCHIVE_PLATFORMS),
         browser_page_interval_seconds=row.browser_page_interval_seconds,
         browser_daily_page_cap=row.browser_daily_page_cap,
         public_request_interval_seconds=row.public_request_interval_seconds,

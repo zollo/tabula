@@ -2206,7 +2206,8 @@
               "enum": [
                 "api",
                 "browser",
-                "public"
+                "public",
+                "archive"
               ]
             },
             "propertyNames": {
@@ -2228,6 +2229,13 @@
             },
             "type": "array",
             "title": "Public Platforms"
+          },
+          "archive_platforms": {
+            "items": {
+              "$ref": "#/components/schemas/Platform"
+            },
+            "type": "array",
+            "title": "Archive Platforms"
           },
           "browser_page_interval_seconds": {
             "type": "integer",
@@ -2255,6 +2263,7 @@
           "platform_sources",
           "browser_platforms",
           "public_platforms",
+          "archive_platforms",
           "browser_page_interval_seconds",
           "browser_daily_page_cap",
           "public_request_interval_seconds"
@@ -2348,7 +2357,8 @@
                   "enum": [
                     "api",
                     "browser",
-                    "public"
+                    "public",
+                    "archive"
                   ]
                 },
                 "propertyNames": {

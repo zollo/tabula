@@ -6,7 +6,14 @@ import BrowserCollection from "./BrowserCollection";
 
 // PATCH body: credentials are new values (or null to clear), unlike the read shape.
 type SettingsUpdate = Partial<
-  Omit<SystemSettings, "credentials" | "credential_values" | "browser_platforms" | "public_platforms">
+  Omit<
+    SystemSettings,
+    | "credentials"
+    | "credential_values"
+    | "browser_platforms"
+    | "public_platforms"
+    | "archive_platforms"
+  >
 > & {
   credentials?: Record<string, string | null>;
 };

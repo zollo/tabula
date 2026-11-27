@@ -22,7 +22,7 @@ interface Props {
   onSave: (body: Partial<SystemSettings>, message: string) => Promise<void>;
 }
 
-/** Admin card: choose API, browser or public pages per platform, pacing, and saved logins. */
+/** Admin card: choose API, browser, public pages or archive per platform, pacing, and saved logins. */
 export default function BrowserCollection({ settings, onSave }: Props) {
   const [sessions, setSessions] = useState<BrowserSession[]>([]);
   const [sources, setSources] = useState(settings.platform_sources);
@@ -88,7 +88,11 @@ export default function BrowserCollection({ settings, onSave }: Props) {
 
   const needsLogin = platform === "x";
   const sourcePlatforms = [
-    ...new Set([...settings.browser_platforms, ...settings.public_platforms]),
+    ...new Set([
+      ...settings.browser_platforms,
+      ...settings.public_platforms,
+      ...settings.archive_platforms,
+    ]),
   ];
 
   return (
@@ -100,9 +104,11 @@ export default function BrowserCollection({ settings, onSave }: Props) {
         accounts. Tabula paces each login and stops using one the moment it's challenged.
       </p>
       <p className="muted small">
-        Reddit can also be read from its public pages with no login, app or credentials at all.
-        Reddit allows about 10 such requests a minute per server, so Tabula spaces them out across
-        all workers and backs off when Reddit asks it to.
+        Reddit can also be read with no login, app or credentials at all, from the Arctic Shift
+        archive. It ingests Reddit within minutes and keeps whole histories (no 1,000-item limit),
+        but it's a free community service with no uptime guarantee, and scores are as of when it
+        collected each post. Reddit's own public pages are a further option, but Reddit has refused
+        signed-out requests since mid-2026.
       </p>
       {error && <div className="alert error">{error}</div>}
 
@@ -124,6 +130,9 @@ export default function BrowserCollection({ settings, onSave }: Props) {
                 )}
                 {settings.public_platforms.includes(p) && (
                   <option value="public">Public pages (no login)</option>
+                )}
+                {settings.archive_platforms.includes(p) && (
+                  <option value="archive">Arctic Shift archive (no login)</option>
                 )}
               </select>
             </div>

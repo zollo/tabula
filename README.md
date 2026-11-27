@@ -45,11 +45,14 @@ platform.
 - Search and filter by text, kind and date range, then download exactly what
   you see as JSON or a readable PDF.
 
-**Three ways to collect**
+**Four ways to collect**
 - **APIs** where you have credentials (Bluesky needs none).
 - A **headless browser** for X and Reddit, using a login you save once, paced
   and capped per login. On X it reaches further back than the API's 3,200 posts.
-- **Public pages** for Reddit: no app, token, account or browser at all.
+- The **Arctic Shift archive** for Reddit: no app, token, account or browser,
+  and whole histories rather than the last ~1,000 items.
+- **Public pages** for Reddit (signed-out `.json`), which Reddit has refused
+  since mid-2026.
 
 **People and permissions**
 - Users see only the accounts they track; admins see everything and manage
@@ -72,7 +75,7 @@ platform.
 | Platform | How | Credentials | History reach |
 |---|---|---|---|
 | **Bluesky** | Public AppView (`app.bsky.feed.getAuthorFeed`) | None | Full history |
-| **Reddit** | OAuth API (`/user/{name}/overview`), a browser, or [public pages](#reddit-without-a-login) | A "script" app from [reddit.com/prefs/apps](https://www.reddit.com/prefs/apps) (`REDDIT_CLIENT_ID` / `_SECRET`); none for public pages | About 1,000 most recent items (Reddit's listing limit) |
+| **Reddit** | OAuth API (`/user/{name}/overview`), a browser, the [Arctic Shift archive](#reddit-without-a-login), or public pages | A "script" app from [reddit.com/prefs/apps](https://www.reddit.com/prefs/apps) (`REDDIT_CLIENT_ID` / `_SECRET`); none for the archive or public pages | About 1,000 most recent items (Reddit's listing limit); full history from the archive |
 | **X** | API v2 (`/2/users/{id}/tweets`) or a [browser](#browser-collection) | App bearer token `X_BEARER_TOKEN` (needs a **paid X API tier**), or a saved login | 3,200 most recent posts via the API; further back via the browser |
 
 Credentials come from environment variables or are saved by an admin under
@@ -211,11 +214,26 @@ it reaches the same ~1,000 items as the API.
 
 ### Reddit without a login
 
-Pick **Public pages (no login)** for Reddit under **Settings → Collection
-sources** to collect posts and comments with no API app, token, account or
-browser. The regular worker reads the public `.json` views reddit.com serves
-signed-out visitors (100 items a page) and reaches the same ~1,000 most recent
-items.
+Pick **Arctic Shift archive (no login)** for Reddit under **Settings →
+Collection sources** to collect posts and comments with no API app, token,
+account or browser, and without sending Reddit a single request. The regular
+worker reads a user's posts and comments from
+[Arctic Shift](https://arctic-shift.photon-reddit.com), a free community
+archive of Reddit that ingests new items within minutes.
+
+- **Whole histories.** Arctic Shift isn't bound by Reddit's ~1,000-item listing
+  limit, so a backfill reaches an account's first post.
+- **Pacing.** All workers share one pace through the database, one request
+  every 2 seconds, and pause together when Arctic Shift answers `429`.
+- **Caveats.** It's run by one person, with no uptime guarantee; when it's down,
+  scans and backfills retry. Scores are as of when it collected each item (plus
+  a second pass a day or so later), and edits or deletions after that don't show
+  up. Accounts it has never seen post can't be added.
+
+**Public pages (no login)** reads the `.json` views reddit.com used to serve
+signed-out visitors (100 items a page, ~1,000 most recent items). Reddit has
+answered those with `403` since mid-2026, so this source is kept for when that
+changes:
 
 - **Pacing.** Reddit allows about 10 unauthenticated requests a minute per IP,
   so every worker shares one pace through the database (*Seconds between public

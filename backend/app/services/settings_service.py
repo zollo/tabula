@@ -86,7 +86,9 @@ def credential_sources(row: SystemSettings) -> dict[str, str]:
 BROWSER_PLATFORMS = (Platform.x, Platform.reddit)
 # Platforms whose public pages can be read with no login or credentials at all.
 PUBLIC_PLATFORMS = (Platform.reddit,)
-SOURCES = ("api", "browser", "public")
+# Platforms whose posts can be read from a third-party archive (Arctic Shift).
+ARCHIVE_PLATFORMS = (Platform.reddit,)
+SOURCES = ("api", "browser", "public", "archive")
 
 
 def _supported(platform: Platform, source: str) -> bool:
@@ -94,6 +96,8 @@ def _supported(platform: Platform, source: str) -> bool:
         return platform in BROWSER_PLATFORMS
     if source == "public":
         return platform in PUBLIC_PLATFORMS
+    if source == "archive":
+        return platform in ARCHIVE_PLATFORMS
     return source == "api"
 
 
@@ -102,7 +106,7 @@ def _effective(platform: Platform, source: str) -> str:
 
 
 def platform_source(row: SystemSettings, platform: Platform) -> str:
-    """'api', 'browser' or 'public': where this platform's posts come from."""
+    """'api', 'browser', 'public' or 'archive': where this platform's posts come from."""
     return _effective(platform, (row.platform_sources or {}).get(platform.value, "api"))
 
 
@@ -122,7 +126,7 @@ async def platform_ready(db: AsyncSession, row: SystemSettings, platform: Platfo
         from app.services import scraper_session_service
 
         return await scraper_session_service.has_usable_session(db, platform)
-    if source == "public":
+    if source in ("public", "archive"):
         return True  # nothing to configure
     return platform_configured(platform, platform_credentials(row))
 
@@ -189,11 +193,13 @@ async def update(
         for key, value in changes["platform_sources"].items():
             platform = Platform(key.value if isinstance(key, Platform) else key)
             if value not in SOURCES:
-                raise Invalid(f"Unknown source {value!r} (use api, browser or public)")
+                raise Invalid(f"Unknown source {value!r} (use api, browser, public or archive)")
             if value == "browser" and platform not in BROWSER_PLATFORMS:
                 raise Invalid(f"{platform.value} can't be collected with a browser")
             if value == "public" and platform not in PUBLIC_PLATFORMS:
                 raise Invalid(f"{platform.value} can't be collected without a login")
+            if value == "archive" and platform not in ARCHIVE_PLATFORMS:
+                raise Invalid(f"{platform.value} can't be collected from an archive")
             if platform_source(row, platform) != value:
                 switched.append(platform)
             sources[platform.value] = value
